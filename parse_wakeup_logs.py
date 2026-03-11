@@ -6,9 +6,14 @@ Traverses ./logs/<device>/hilog/ directories, extracts wakeup event timestamps
 from Android (hiapplogcat-log) and HarmonyOS (hilog.*.txt) log files,
 and writes the results into an Excel workbook with one sheet per device.
 
-Extracted events:
-  T1  ===de           (Level-1 wakeup entry)
-  T2  ===start::      (Level-2 wakeup entry)
+HarmonyOS log format (hilog.*.txt):
+  T1  ===de / ===detected   (Level-1 wakeup entry)
+  T2  ===start::            (Level-2 wakeup entry)
+  T3  onResult:: isShouldResponse  (Decision log)
+
+Android log format (hiapplogcat-log*):
+  No T1 (level-1 wakeup does not exist on Android)
+  T2  ===start::            (Level-2 wakeup entry)
   T3  onResult:: isShouldResponse  (Decision log)
 """
 
@@ -45,10 +50,17 @@ def parse_log_file(filepath: Path) -> list[dict]:
     """
     Parse a single log file and return a list of wakeup event groups.
     Each group is a dict with keys: t1, t2, t3, decision.
-    Grouping rule:
-      - A new T1 starts a new pending event group.
-      - T2 and T3 are attached to the most recent incomplete group.
-      - A group is complete (flushed) when T3 is captured.
+
+    Grouping rules:
+      HarmonyOS path (hilog.*.txt) — has T1:
+        T1 → opens a new group (flushes any incomplete previous group)
+        T2 → attaches to the open group
+        T3 → closes and saves the group
+
+      Android path (hiapplogcat-log*) — no T1:
+        T2 → opens a new group (because there will never be a T1)
+             if a group is already open, flush it first
+        T3 → closes and saves the group
     """
     groups: list[dict] = []
     pending: dict | None = None  # current open group
@@ -59,19 +71,34 @@ def parse_log_file(filepath: Path) -> list[dict]:
                 if RE_T1.search(line):
                     ts = extract_timestamp(line)
                     if ts:
-                        # If there was an incomplete previous group, save it anyway
                         if pending:
                             groups.append(pending)
                         pending = {"t1": ts, "t2": None, "t3": None, "decision": None}
 
                 elif RE_T2.search(line):
                     ts = extract_timestamp(line)
-                    if ts and pending and pending["t2"] is None:
+                    if not ts:
+                        continue
+                    if pending is None:
+                        # Android: no T1 ever appears → T2 opens the group
+                        pending = {"t1": None, "t2": ts, "t3": None, "decision": None}
+                    elif pending["t2"] is None:
+                        # HarmonyOS: T2 follows T1 in the same group
                         pending["t2"] = ts
+                    else:
+                        # A second T2 arrived before T3 — flush the stale group
+                        # and start fresh (handles back-to-back wakeups on Android)
+                        groups.append(pending)
+                        pending = {"t1": None, "t2": ts, "t3": None, "decision": None}
 
                 elif RE_T3.search(line):
                     ts = extract_timestamp(line)
-                    if ts and pending and pending["t3"] is None:
+                    if not ts:
+                        continue
+                    if pending is None:
+                        # T3 without any preceding T1/T2 — create a minimal group
+                        pending = {"t1": None, "t2": None, "t3": None, "decision": None}
+                    if pending["t3"] is None:
                         pending["t3"] = ts
                         m = RE_DECISION.search(line)
                         pending["decision"] = m.group(1).lower() if m else "unknown"
@@ -81,7 +108,7 @@ def parse_log_file(filepath: Path) -> list[dict]:
     except OSError as exc:
         print(f"  [WARN] Cannot read {filepath}: {exc}", file=sys.stderr)
 
-    # Flush any trailing incomplete group
+    # Flush any trailing incomplete group (e.g. log cut off before T3)
     if pending:
         groups.append(pending)
 
