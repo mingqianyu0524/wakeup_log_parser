@@ -167,20 +167,29 @@ def is_log_file(path: Path) -> bool:
     return False
 
 
-def _scan_file(filepath: Path) -> tuple[list[dict], list[dict], list[dict]]:
+def _scan_file(
+    filepath: Path,
+    initial_pending: dict | None = None,
+) -> tuple[list[dict], list[dict], list[dict], dict | None]:
     """
     Single-pass scan of one log file.
 
+    Args:
+        filepath:        Path to the log file.
+        initial_pending: An incomplete wakeup event carried over from the
+                         previous file (handles cross-file truncation).
+
     Returns:
-        wakeup_events  – list of {t1, t2, t3, decision} dicts with _ms fields
-        sent_bcast     – list of {ts, ts_ms, decoded}
-        recv_bcast     – list of {ts, ts_ms, raw, decoded}
+        wakeup_events    – list of completed {t1, t2, t3, decision} dicts
+        sent_bcast       – list of {ts, ts_ms, decoded}
+        recv_bcast       – list of {ts, ts_ms, raw, decoded}
+        pending          – the still-open event at EOF, or None
     """
     wakeup_events: list[dict] = []
     sent_bcast:    list[dict] = []
     recv_bcast:    list[dict] = []
 
-    pending: dict | None = None
+    pending: dict | None = initial_pending
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
@@ -302,10 +311,9 @@ def _scan_file(filepath: Path) -> tuple[list[dict], list[dict], list[dict]]:
     except OSError as exc:
         print(f"  [WARN] Cannot read {filepath}: {exc}", file=sys.stderr)
 
-    if pending:
-        wakeup_events.append(pending)
-
-    return wakeup_events, sent_bcast, recv_bcast
+    # Do NOT flush pending here — return it to the caller so it can be
+    # threaded into the next file's scan as initial state (cross-file carry).
+    return wakeup_events, sent_bcast, recv_bcast, pending
 
 
 # ── O1 object builder ─────────────────────────────────────────────────────────
@@ -411,11 +419,17 @@ def parse_device_logs(device_hilog_dir: Path) -> list[dict]:
     all_sent:   list[dict] = []
     all_recv:   list[dict] = []
 
+    # Thread pending state across files so wakeup events that straddle a
+    # file boundary are completed rather than split into two fragments.
+    carry: dict | None = None
     for lf in log_files:
-        w, s, r = _scan_file(lf)
+        w, s, r, carry = _scan_file(lf, initial_pending=carry)
         all_wakeup.extend(w)
         all_sent.extend(s)
         all_recv.extend(r)
+    # Flush any event still open after the final file
+    if carry:
+        all_wakeup.append(carry)
 
     # Sort by anchor time for deterministic ordering
     all_wakeup.sort(key=lambda e: e.get("t1_ms") or e.get("t2_ms") or 0)
