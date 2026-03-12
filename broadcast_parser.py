@@ -356,15 +356,21 @@ def _build_o1(ev: dict, sent: list[dict], recv: list[dict]) -> dict:
         device_type = src["decoded"].get("deviceType")
 
     # ── T2b: received broadcasts in the wakeup window ─────────────────────
+    # De-duplicate by raw byte content: BLE advertises at ~20ms intervals,
+    # so the same payload may appear dozens of times. Keep only the first
+    # occurrence of each unique raw string.
     received = []
+    seen_raw: set[str] = set()
     if anchor_ms is not None and T4_ms is not None:
         for r in recv:
             if anchor_ms <= r["ts_ms"] <= T4_ms:
-                received.append({
-                    "Broadcast":   r["raw"],
-                    "ReceiveTime": r["ts"],
-                    "Decoded":     r["decoded"],
-                })
+                if r["raw"] not in seen_raw:
+                    seen_raw.add(r["raw"])
+                    received.append({
+                        "Broadcast":   r["raw"],
+                        "ReceiveTime": r["ts"],
+                        "Decoded":     r["decoded"],
+                    })
 
     return {
         "deviceType":        device_type,

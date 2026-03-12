@@ -71,26 +71,46 @@ def _render_broadcast_detail(bc: dict) -> None:
 
 def _render_event_card(idx: int, o1: dict) -> None:
     """Render an expandable card for one O1 wakeup event."""
-    t1  = o1.get("L1WakeupTime") or "—"
+    t1  = o1.get("L1WakeupTime")
     t2  = o1.get("L2WakeupTime") or "—"
-    dec = o1.get("Decision")     or "—"
+    dec = o1.get("Decision") or "—"
     dtype_name = o1.get("deviceTypeName") or "—"
     dtype_raw  = o1.get("deviceType")
     dtype_str  = f"{dtype_name}[{dtype_raw}]" if dtype_raw else dtype_name
 
+    # Show T1 if it exists, otherwise fall back to T2
+    display_time     = t1 if t1 else t2
+    display_time_lbl = "T1" if t1 else "T2"
+
+    dec_label = "响应" if dec == "true" else "不响应" if dec == "false" else dec
+    dec_badge_cls = (
+        "bg-green-100 text-green-700" if dec == "true"
+        else "bg-red-100 text-red-600" if dec == "false"
+        else "bg-gray-100 text-gray-500"
+    )
     dec_color = (
         "text-green-600" if dec == "true"
         else "text-red-500" if dec == "false"
         else "text-gray-500"
     )
 
-    summary_label = (
-        f"#{idx+1}  T1={t1}  T2={t2}  "
-        f"决策={'响应' if dec=='true' else '不响应' if dec=='false' else dec}  "
-        f"设备={dtype_str}"
-    )
+    exp = ui.expansion().classes("w-full border rounded mb-1")
+    with exp.add_slot("header"):
+        with ui.row().classes("items-center gap-3 w-full py-0.5"):
+            # Colored index badge
+            ui.label(f"#{idx + 1}").classes(
+                "bg-indigo-500 text-white text-xs font-bold "
+                "px-2 py-0.5 rounded-full min-w-[2rem] text-center"
+            )
+            # Single wakeup time (T1 preferred, T2 fallback)
+            ui.label(f"{display_time_lbl}=").classes("text-gray-400 text-xs -mr-2")
+            ui.label(display_time).classes("font-mono text-sm text-gray-700")
+            # Decision badge
+            ui.label(dec_label).classes(
+                f"text-xs font-semibold px-2 py-0.5 rounded {dec_badge_cls} ml-auto"
+            )
 
-    with ui.expansion(summary_label).classes("w-full border rounded mb-1"):
+    with exp:
         with ui.grid(columns=2).classes("w-full gap-x-6 gap-y-1 text-sm p-2"):
 
             # ── left column ────────────────────────────────────────────
