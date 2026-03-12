@@ -283,8 +283,16 @@ def index():
                 )
 
                 for device_name, events in all_results.items():
+                    # Derive UDID from the first event that has it
+                    device_udid = None
+                    for ev in events:
+                        udid_bytes = ev.get("DeviceUdid")
+                        if udid_bytes:
+                            device_udid = "".join(f"{b:02X}" for b in udid_bytes)
+                            break
+                    udid_part = f"  UDID={device_udid}" if device_udid else ""
                     with ui.expansion(
-                        f"📱 {device_name}  ({len(events)} 次唤醒)",
+                        f"📱 {device_name}{udid_part}  ({len(events)} 次唤醒)",
                         icon="devices",
                     ).classes("w-full border rounded shadow-sm"):
                         if not events:

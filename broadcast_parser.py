@@ -349,11 +349,13 @@ def _build_o1(ev: dict, sent: list[dict], recv: list[dict]) -> dict:
                 t2a_entry = s
                 break
 
-    # ── deviceType from sent wakeup broadcast (fallback: pre-wakeup) ──────
+    # ── deviceType / UDID from sent wakeup broadcast (fallback: pre-wakeup) ─
     device_type = None
+    device_udid = None
     src = t2a_entry or t1a_entry
     if src:
         device_type = src["decoded"].get("deviceType")
+        device_udid = src["decoded"].get("udid")
 
     # ── T2b: received broadcasts in the wakeup window ─────────────────────
     # De-duplicate by raw byte content: BLE advertises at ~20ms intervals,
@@ -375,6 +377,7 @@ def _build_o1(ev: dict, sent: list[dict], recv: list[dict]) -> dict:
     return {
         "deviceType":        device_type,
         "deviceTypeName":    _DEVICE_TYPE_NAMES.get(device_type, "未知") if device_type else None,
+        "DeviceUdid":        device_udid,
         "L1WakeupTime":      ev.get("t1"),
         "L1BroadcastTime":   t1a_entry["ts"] if t1a_entry else None,
         "L1BroadcastData":   t1a_entry["decoded"] if t1a_entry else None,
