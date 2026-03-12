@@ -208,7 +208,6 @@ def index():
         results_label = ui.label("解析结果将显示在此处").classes(
             "text-gray-400 text-sm"
         )
-        nonlocal result_area
         result_area = ui.column().classes("w-full gap-3")
 
         # ── parse logic ───────────────────────────────────────────────────
