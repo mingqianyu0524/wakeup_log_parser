@@ -439,6 +439,337 @@ def parse_device_logs(device_hilog_dir: Path) -> list[dict]:
     return [_build_o1(ev, all_sent, all_recv) for ev in all_wakeup]
 
 
+# ── cross-device alignment ────────────────────────────────────────────────────
+
+class _UnionFind:
+    """Path-compressed, union-by-rank disjoint set."""
+
+    def __init__(self, n: int) -> None:
+        self.parent = list(range(n))
+        self.rank   = [0] * n
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]  # path halving
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.rank[ra] < self.rank[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        if self.rank[ra] == self.rank[rb]:
+            self.rank[ra] += 1
+
+
+def _udid_hex(udid_bytes) -> str:
+    """Convert 4-byte UDID list to uppercase hex string, or '未知' if absent."""
+    if not udid_bytes:
+        return "未知"
+    try:
+        return "".join(f"{b:02X}" for b in udid_bytes)
+    except (TypeError, ValueError):
+        return "未知"
+
+
+def _median(vals: list) -> float:
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return float(s[mid]) if n % 2 == 1 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _iqr(vals: list) -> float:
+    s = sorted(vals)
+    n = len(s)
+    return float(s[(3 * n) // 4] - s[n // 4])
+
+
+def _anchor_ms_of(o1: dict) -> int | None:
+    """Return anchor_ms (T1 or T2 in ms) for an O1 event."""
+    t1 = o1.get("L1WakeupTime")
+    t2 = o1.get("L2WakeupTime")
+    if t1:
+        return ts_to_ms(t1)
+    if t2:
+        return ts_to_ms(t2)
+    return None
+
+
+def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
+    """
+    Group wakeup events from multiple devices into cross-device aligned sessions.
+
+    Algorithm:
+      Phase 1 — Union events whose sent-broadcast raw matches a received-broadcast raw.
+      Phase 2 — Time-offset fallback (median + IQR) for still-unmatched events.
+      Phase 3 — Build sessions from Union-Find components; assign per-device confidence
+                 using the worst-link rule: one yellow link forces yellow, one red forces red.
+
+    Returns a list of AlignedSession dicts::
+
+        {
+            "session_id":  int,
+            "anchor_time": str,
+            "entries": {
+                "<device>": {
+                    "event":             dict,   # O1 from parse_device_logs()
+                    "confidence":        str,    # "green"|"yellow"|"red"|"isolated"
+                    "received_from":     list,   # [{"device":str, "udid":str}, ...]
+                    "not_received_from": list,   # [{"device":str, "udid":str}, ...]
+                }, ...
+            }
+        }
+
+    Absent devices simply have no key in "entries".
+    """
+    devices: list[str] = list(all_results.keys())
+
+    if len(devices) < 2:
+        # Single-device: every event is its own isolated session
+        result = []
+        for dev in devices:
+            for i, ev in enumerate(all_results[dev]):
+                ams = _anchor_ms_of(ev) or 0
+                try:
+                    at = (datetime.fromtimestamp(ams / 1000)
+                          .strftime("%m-%d %H:%M:%S.") + f"{ams % 1000:03d}")
+                except Exception:
+                    at = "—"
+                result.append({
+                    "session_id":  i + 1,
+                    "anchor_time": at,
+                    "entries": {
+                        dev: {
+                            "event":             ev,
+                            "confidence":        "isolated",
+                            "received_from":     [],
+                            "not_received_from": [],
+                        }
+                    },
+                })
+        return result
+
+    # ── flatten all events ────────────────────────────────────────────────────
+    flat: list[tuple[str, int, dict]] = []  # (device_name, local_idx, o1)
+    for dev in devices:
+        for idx, ev in enumerate(all_results[dev]):
+            flat.append((dev, idx, ev))
+
+    total = len(flat)
+    uf = _UnionFind(total)
+
+    node_of: dict[tuple[str, int], int] = {
+        (dev, idx): nid for nid, (dev, idx, _) in enumerate(flat)
+    }
+    anchor_ms: list[int | None] = [_anchor_ms_of(ev) for (_, _, ev) in flat]
+
+    # ── Phase 1: broadcast-exact matching ────────────────────────────────────
+    # Build inverted index: raw_str -> [node_id that received it]
+    recv_index: dict[str, list[int]] = {}
+    for nid, (_, _, ev) in enumerate(flat):
+        for rb in ev.get("ReceivedBroadcasts", []):
+            raw = rb.get("Broadcast", "")
+            if raw:
+                recv_index.setdefault(raw, []).append(nid)
+
+    # Union sender with all receivers of the same raw payload
+    for nid, (dev, _, ev) in enumerate(flat):
+        l2 = ev.get("L2BroadcastData") or {}
+        l1 = ev.get("L1BroadcastData") or {}
+        sent_raw = l2.get("raw") or l1.get("raw") or ""
+        if not sent_raw:
+            continue
+        for recv_nid in recv_index.get(sent_raw, []):
+            if flat[recv_nid][0] != dev:
+                uf.union(nid, recv_nid)
+
+    # ── Phase 2: time-offset fallback matching ────────────────────────────────
+    # Collect per-pair deltas from Phase 1 matches only
+    pair_deltas: dict[tuple[str, str], list[float]] = {}
+    for na in range(total):
+        for nb in range(na + 1, total):
+            if uf.find(na) != uf.find(nb):
+                continue
+            dev_a, dev_b = flat[na][0], flat[nb][0]
+            if dev_a == dev_b:
+                continue
+            key = (min(dev_a, dev_b), max(dev_a, dev_b))
+            ams_a, ams_b = anchor_ms[na], anchor_ms[nb]
+            if ams_a is None or ams_b is None:
+                continue
+            # delta = anchor_{key[0]} - anchor_{key[1]}
+            delta = ams_a - ams_b if key[0] == dev_a else ams_b - ams_a
+            pair_deltas.setdefault(key, []).append(delta)
+
+    pair_stats: dict[tuple[str, str], tuple[float, float]] = {}
+    for key, deltas in pair_deltas.items():
+        if len(deltas) >= 3:
+            off   = _median(deltas)
+            iqr_v = _iqr(deltas)
+        else:
+            off, iqr_v = 0.0, 0.0
+        pair_stats[key] = (off, iqr_v)
+
+    # Match still-unmatched events between each ordered device pair
+    for dev_x in devices:
+        for dev_y in devices:
+            if dev_x >= dev_y:
+                continue
+            key        = (dev_x, dev_y)
+            off, iqr_v = pair_stats.get(key, (0.0, 0.0))
+            outer      = max(3.0 * iqr_v, 2000.0)
+
+            x_nodes = [node_of[(dev_x, i)] for i in range(len(all_results[dev_x]))]
+            y_nodes = [node_of[(dev_y, i)] for i in range(len(all_results[dev_y]))]
+
+            def _comp_has_dev(node_id: int, target_dev: str) -> bool:
+                root = uf.find(node_id)
+                return any(
+                    flat[i][0] == target_dev
+                    for i in range(total)
+                    if uf.find(i) == root
+                )
+
+            for nx in x_nodes:
+                if _comp_has_dev(nx, dev_y):
+                    continue  # already joined to dev_y
+                ams_x = anchor_ms[nx]
+                if ams_x is None:
+                    continue
+
+                best_ny, best_diff = None, float("inf")
+                for ny in y_nodes:
+                    if _comp_has_dev(ny, dev_x):
+                        continue
+                    ams_y = anchor_ms[ny]
+                    if ams_y is None:
+                        continue
+                    diff = abs((ams_x - ams_y) - off)
+                    if diff <= outer and diff < best_diff:
+                        best_diff = diff
+                        best_ny = ny
+
+                if best_ny is not None:
+                    uf.union(nx, best_ny)
+
+    # ── Phase 3: build sessions with per-device confidence ────────────────────
+    components: dict[int, list[int]] = {}
+    for nid in range(total):
+        components.setdefault(uf.find(nid), []).append(nid)
+
+    _CONF_RANK = {"green": 0, "yellow": 1, "red": 2}
+
+    def _session_anchor(nids: list[int]) -> int:
+        times = [anchor_ms[i] for i in nids if anchor_ms[i] is not None]
+        return min(times) if times else 0
+
+    sessions: list[dict] = []
+    sid = 1
+
+    for _, nids in sorted(components.items(), key=lambda kv: _session_anchor(kv[1])):
+        # One node per device in this component
+        dev_node: dict[str, int] = {}
+        for nid in nids:
+            dev_node[flat[nid][0]] = nid
+
+        # Earliest anchor time as session label
+        times = [anchor_ms[nid] for nid in nids if anchor_ms[nid] is not None]
+        ams_min = min(times) if times else None
+        if ams_min is not None:
+            try:
+                at = (datetime.fromtimestamp(ams_min / 1000)
+                      .strftime("%m-%d %H:%M:%S.") + f"{ams_min % 1000:03d}")
+            except Exception:
+                at = "—"
+        else:
+            at = "—"
+
+        entries: dict[str, dict] = {}
+
+        for dev_i, ni in dev_node.items():
+            ev_i  = flat[ni][2]
+            ams_i = anchor_ms[ni]
+
+            if len(dev_node) == 1:
+                entries[dev_i] = {
+                    "event":             ev_i,
+                    "confidence":        "isolated",
+                    "received_from":     [],
+                    "not_received_from": [],
+                }
+                continue
+
+            link_confs: list[str] = []
+            recv_from:  list[dict] = []
+            no_recv:    list[dict] = []
+
+            for dev_j, nj in dev_node.items():
+                if dev_j == dev_i:
+                    continue
+                ev_j  = flat[nj][2]
+                ams_j = anchor_ms[nj]
+
+                # Did dev_i directly receive dev_j's sent broadcast?
+                l2j      = ev_j.get("L2BroadcastData") or {}
+                l1j      = ev_j.get("L1BroadcastData") or {}
+                sent_raw = l2j.get("raw") or l1j.get("raw") or ""
+                rb_match = None
+                if sent_raw:
+                    for rb in ev_i.get("ReceivedBroadcasts", []):
+                        if rb.get("Broadcast") == sent_raw:
+                            rb_match = rb
+                            break
+
+                if rb_match is not None:
+                    # Green link: broadcast received directly
+                    link_confs.append("green")
+                    dec = rb_match.get("Decoded") or {}
+                    recv_from.append({
+                        "device": dev_j,
+                        "udid":   _udid_hex(dec.get("udid")),
+                    })
+                else:
+                    # Time-estimate link: classify by IQR distance
+                    key        = (min(dev_i, dev_j), max(dev_i, dev_j))
+                    off, iqr_v = pair_stats.get(key, (0.0, 0.0))
+                    if ams_i is not None and ams_j is not None:
+                        delta = ams_i - ams_j if key == (dev_i, dev_j) else ams_j - ams_i
+                        diff  = abs(delta - off)
+                        link_confs.append("yellow" if diff <= iqr_v else "red")
+                    else:
+                        link_confs.append("yellow")
+                    no_recv.append({
+                        "device": dev_j,
+                        "udid":   _udid_hex(ev_j.get("DeviceUdid")),
+                    })
+
+            # Worst-link rule: one yellow/red link dominates
+            confidence = (
+                max(link_confs, key=lambda c: _CONF_RANK.get(c, 0))
+                if link_confs else "isolated"
+            )
+
+            entries[dev_i] = {
+                "event":             ev_i,
+                "confidence":        confidence,
+                "received_from":     recv_from,
+                "not_received_from": no_recv,
+            }
+
+        sessions.append({
+            "session_id":  sid,
+            "anchor_time": at,
+            "entries":     entries,
+        })
+        sid += 1
+
+    return sessions
+
+
 # ── CLI test entry point ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":

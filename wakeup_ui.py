@@ -19,6 +19,7 @@ from nicegui import app, run, ui
 
 from broadcast_parser import (
     _DEVICE_TYPE_NAMES,
+    align_sessions,
     parse_device_logs,
 )
 
@@ -160,6 +161,109 @@ def _kv(label: str, value) -> None:
     ui.label(f"{label}: {display}").classes("text-sm")
 
 
+# ── alignment view helpers ────────────────────────────────────────────────────
+
+_CONF_BORDER = {
+    "green":    "border-green-400",
+    "yellow":   "border-yellow-400",
+    "red":      "border-red-400",
+    "isolated": "border-gray-300",
+}
+_CONF_ICON = {
+    "green":    "🟢",
+    "yellow":   "🟡",
+    "red":      "🔴",
+    "isolated": "🔵",
+}
+
+
+def _render_aligned_device_card(dev_name: str, entry: dict | None) -> None:
+    """Render one device card inside the aligned session view."""
+    if entry is None:
+        with ui.card().classes("min-w-[200px] border-2 border-gray-200 opacity-50"):
+            ui.label(f"⬜ {dev_name}").classes("font-semibold text-gray-500")
+            ui.label("缺席 —").classes("text-gray-400 text-sm")
+        return
+
+    conf       = entry.get("confidence", "isolated")
+    border_cls = _CONF_BORDER.get(conf, "border-gray-300")
+    icon       = _CONF_ICON.get(conf, "⬜")
+
+    ev        = entry["event"]
+    t2        = ev.get("L2WakeupTime") or "—"
+    t3        = ev.get("DecisionTime") or "—"
+    dec       = ev.get("Decision") or "—"
+    dec_label = "响应" if dec == "true" else "不响应" if dec == "false" else dec
+
+    recv_from = entry.get("received_from", [])
+    no_recv   = entry.get("not_received_from", [])
+
+    with ui.card().classes(f"min-w-[200px] border-2 {border_cls}"):
+        ui.label(f"{icon} {dev_name}").classes("font-semibold")
+        with ui.column().classes("gap-0 text-xs font-mono"):
+            ui.label(f"T2={t2}")
+            ui.label(f"T3={t3}")
+        ui.label(f"决策: {dec_label}").classes("text-xs")
+        if recv_from:
+            parts = ", ".join(
+                f"{d['device']}(UDID:{d['udid']})" for d in recv_from
+            )
+            ui.label(f"已收到广播: {parts}").classes("text-xs text-green-600 mt-1")
+        if no_recv:
+            parts = ", ".join(
+                f"{d['device']}(UDID:{d['udid']})" for d in no_recv
+            )
+            ui.label(f"未收到广播（时间估算）: {parts}").classes(
+                "text-xs text-yellow-600 mt-1"
+            )
+
+
+def _render_aligned_sessions(
+    sessions: list[dict],
+    all_device_names: list[str],
+) -> None:
+    """Render the full cross-device alignment view."""
+    if not sessions:
+        ui.label("无对齐结果").classes("text-gray-400")
+        return
+
+    ui.label(f"唤醒对齐视图 (共 {len(sessions)} 次唤醒)").classes(
+        "text-lg font-semibold text-gray-700"
+    )
+
+    options = {
+        s["session_id"]: (
+            f"#{s['session_id']}  {s['anchor_time']}  ({len(s['entries'])}台设备)"
+        )
+        for s in sessions
+    }
+
+    cards_col = ui.column().classes("w-full")
+
+    def _show_session(session_id: int) -> None:
+        cards_col.clear()
+        sess = next((s for s in sessions if s["session_id"] == session_id), None)
+        if sess is None:
+            return
+        with cards_col:
+            with ui.row().classes("w-full gap-3 flex-wrap"):
+                for dev in all_device_names:
+                    _render_aligned_device_card(dev, sess["entries"].get(dev))
+            with ui.row().classes("gap-4 text-xs text-gray-500 mt-2"):
+                ui.label("🟢 广播匹配")
+                ui.label("🟡 时间估算(IQR内)")
+                ui.label("🔴 时间估算(IQR外)")
+                ui.label("⬜ 未参与")
+
+    ui.select(
+        options,
+        value=sessions[0]["session_id"],
+        on_change=lambda e: _show_session(e.value),
+    ).classes("w-full mb-2")
+
+    _show_session(sessions[0]["session_id"])
+
+
 # ── main page ─────────────────────────────────────────────────────────────────
 
 @ui.page("/")
@@ -167,6 +271,7 @@ def index():
     # Per-session state
     device_rows: list[dict] = []   # each: {"input": ui.input}
     result_area = None
+    _state: dict = {"all_results": {}}  # shared between on_parse and on_align
 
     # ── header ────────────────────────────────────────────────────────────
     with ui.header().classes("bg-blue-700 text-white items-center px-6 py-3 shadow"):
@@ -230,6 +335,12 @@ def index():
         )
         result_area = ui.column().classes("w-full gap-3")
 
+        align_btn = ui.button("对齐分析", icon="compare_arrows").classes(
+            "mt-2 bg-indigo-600 text-white"
+        )
+        align_btn.set_visibility(False)
+        align_area = ui.column().classes("w-full gap-3")
+
         # ── parse logic ───────────────────────────────────────────────────
 
         async def on_parse():
@@ -242,6 +353,9 @@ def index():
             parse_btn.props("loading")
             results_label.set_text("正在解析…")
             result_area.clear()
+            align_area.clear()
+            align_btn.set_visibility(False)
+            _state["all_results"] = {}
 
             # Run blocking I/O in thread pool
             all_results: dict[str, list[dict]] = {}
@@ -302,6 +416,18 @@ def index():
                                 for i, o1 in enumerate(events):
                                     _render_event_card(i, o1)
 
+            _state["all_results"] = all_results
+            align_btn.set_visibility(len(all_results) >= 2)
+
+        async def on_align():
+            align_area.clear()
+            sessions = await run.io_bound(
+                lambda: align_sessions(_state["all_results"])
+            )
+            with align_area:
+                _render_aligned_sessions(sessions, list(_state["all_results"].keys()))
+
+        align_btn.on_click(on_align)
         parse_btn.on_click(on_parse)
 
 
