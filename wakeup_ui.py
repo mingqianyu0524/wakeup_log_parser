@@ -176,101 +176,230 @@ _CONF_ICON = {
     "isolated": "🔵",
 }
 
+# Device response priority: higher integer = higher priority (should respond first)
+_DEVICE_PRIORITY: dict[int, int] = {
+    240: 10,  # 车机
+    230: 9,   # 移动智慧屏
+    220: 8,   # OMELCD
+    210: 7,   # 音箱
+    150: 6,   # 大屏
+    110: 5,   # 手表
+    80:  4,   # 耳机
+    50:  3,   # 手机
+    40:  2,   # 平板
+    30:  1,   # PC
+}
 
-def _render_aligned_device_row(dev_name: str, entry: dict | None) -> None:
+
+def _classify_session(entries: dict) -> tuple[str, str, str]:
+    """
+    Classify a session's wakeup response pattern.
+    Returns (status, label, badge_css_classes):
+      "normal"  — correct (highest-priority device responded) or no response
+      "double"  — 2+ devices responded and highest-priority device is among them
+      "wrong"   — 2+ devices responded but highest-priority NOT among them,
+                  OR exactly 1 responded but it's not the highest-priority device
+    """
+    responding_types: list[int] = []
+    all_types:        list[int] = []
+    for entry in entries.values():
+        ev    = entry["event"]
+        dtype = ev.get("deviceType")
+        if dtype is not None:
+            all_types.append(dtype)
+        if ev.get("Decision") == "true" and dtype is not None:
+            responding_types.append(dtype)
+
+    n_resp = len(responding_types)
+    if n_resp == 0:
+        return ("normal", "", "")
+
+    highest = (
+        max(all_types, key=lambda t: _DEVICE_PRIORITY.get(t, 0))
+        if all_types else None
+    )
+
+    if n_resp == 1:
+        if highest is None or responding_types[0] == highest:
+            return ("normal", "", "")
+        return (
+            "wrong", "错响",
+            "bg-yellow-100 text-yellow-800 border border-yellow-400",
+        )
+
+    # n_resp >= 2
+    if highest in responding_types:
+        return (
+            "double", "双响",
+            "bg-red-100 text-red-700 border border-red-400",
+        )
+    return (
+        "wrong", "错响",
+        "bg-yellow-100 text-yellow-800 border border-yellow-400",
+    )
+
+
+def _build_dev_info(sessions: list[dict]) -> dict[str, tuple[str, str]]:
+    """
+    Build {dev_name: (dtype_name, udid_hex)} from the first available event
+    per device across all sessions.  Used to label absent-device slots without
+    relying on raw directory names.
+    """
+    info: dict[str, tuple[str, str]] = {}
+    for sess in sessions:
+        for dev_name, entry in sess["entries"].items():
+            if dev_name not in info:
+                ev       = entry["event"]
+                dtype    = ev.get("deviceTypeName") or "—"
+                udid_raw = ev.get("DeviceUdid")
+                udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+                info[dev_name] = (dtype, udid)
+    return info
+
+
+def _render_aligned_device_row(
+    dev_name: str,
+    entry:    dict | None,
+    dev_info: dict[str, tuple[str, str]],
+) -> None:
     """Render one device row (expandable) in the aligned session view."""
+
+    # ── absent device ──────────────────────────────────────────────────────────
     if entry is None:
-        # Absent device — static non-expandable row
+        dtype, udid = dev_info.get(dev_name, ("—", "未知"))
         with ui.row().classes(
-            "w-full border rounded px-3 py-2 mb-1 bg-gray-50 opacity-60 items-center gap-2"
+            "w-full border rounded px-3 py-2 mb-1 bg-gray-50 "
+            "opacity-60 items-center gap-2"
         ):
             ui.label("⬜").classes("text-base")
-            ui.label(dev_name).classes("text-sm text-gray-500")
-            ui.label("(缺席)").classes("text-xs text-gray-400 italic")
+            ui.label(f"{dtype}  UDID:{udid}").classes("text-sm text-gray-500 flex-1")
+            ui.label("缺席").classes("text-xs text-gray-400 italic")
         return
 
-    conf       = entry.get("confidence", "isolated")
-    border_cls = _CONF_BORDER.get(conf, "border-l-green-400")
-    icon       = _CONF_ICON.get(conf, "⬜")
-
+    # ── present device ─────────────────────────────────────────────────────────
+    conf        = entry.get("confidence", "isolated")
+    icon        = _CONF_ICON.get(conf, "⬜")
     ev          = entry["event"]
     dtype_name  = ev.get("deviceTypeName") or "—"
     device_udid = ev.get("DeviceUdid")
     udid_str    = "".join(f"{b:02X}" for b in device_udid) if device_udid else "未知"
     dec         = ev.get("Decision") or "—"
     dec_label   = "响应" if dec == "true" else "不响应" if dec == "false" else dec
-    dec_color   = (
-        "text-green-600" if dec == "true"
-        else "text-red-500" if dec == "false"
-        else "text-gray-500"
+    dec_badge   = (
+        "bg-green-100 text-green-700" if dec == "true"
+        else "bg-gray-100 text-gray-500"
     )
-
     recv_from = entry.get("received_from", [])
     no_recv   = entry.get("not_received_from", [])
 
-    title = f"{icon} {dtype_name}  UDID:{udid_str}  ({dev_name})"
-    exp = ui.expansion(title).classes(
+    # ── expansion with custom header ──────────────────────────────────────────
+    exp = ui.expansion().classes(
         f"w-full border-l-4 {_CONF_BORDER.get(conf, 'border-gray-300')} "
         "border border-gray-200 rounded mb-1"
     )
+    with exp.add_slot("header"):
+        with ui.row().classes("items-center gap-2 w-full py-0.5"):
+            ui.label(icon).classes("text-base leading-none")
+            ui.label(f"{dtype_name}  UDID:{udid_str}").classes("text-sm flex-1")
+            ui.label(dec_label).classes(
+                f"text-xs font-semibold px-2 py-0.5 rounded {dec_badge}"
+            )
+
     with exp:
-        with ui.column().classes("gap-1 text-sm p-2"):
+        with ui.column().classes("gap-2 p-2 text-sm"):
 
-            # T1
-            _kv("一级唤醒 T1", ev.get("L1WakeupTime"))
+            # ── 时间栏 ──────────────────────────────────────────────────────
+            ui.label("时间").classes(
+                "text-xs font-bold text-gray-400 uppercase tracking-wide"
+            )
+            with ui.column().classes("gap-0 pl-1"):
+                _kv("T1   一级唤醒",     ev.get("L1WakeupTime"))
+                _kv("T1a  预唤醒广播",   ev.get("L1BroadcastTime"))
+                _kv("T2   二级唤醒",     ev.get("L2WakeupTime"))
+                _kv("T2a  唤醒广播",     ev.get("L2BroadcastTime"))
+                _kv("T3   决策",         ev.get("DecisionTime"))
 
-            # T1a — pre-wakeup broadcast sent
-            l1bd = ev.get("L1BroadcastData")
-            if l1bd:
-                ui.label(
-                    f"发送广播时间 T1a: {ev.get('L1BroadcastTime') or '—'}"
-                ).classes("font-medium text-blue-700 mt-1")
-                _render_broadcast_detail({
-                    "Decoded":    l1bd,
-                    "Broadcast":  l1bd.get("raw", ""),
-                })
-            else:
-                _kv("发送广播 T1a", None)
+            ui.separator().classes("my-0.5")
 
-            # T2
-            _kv("二级唤醒 T2", ev.get("L2WakeupTime"))
+            # ── 广播栏 ──────────────────────────────────────────────────────
+            ui.label("广播数据").classes(
+                "text-xs font-bold text-gray-400 uppercase tracking-wide"
+            )
+            broadcasts_to_parse: list[tuple[str, dict]] = []
 
-            # T2a — wakeup broadcast sent
-            l2bd = ev.get("L2BroadcastData")
-            if l2bd:
-                ui.label(
-                    f"发送广播时间 T2a: {ev.get('L2BroadcastTime') or '—'}"
-                ).classes("font-medium text-blue-700 mt-1")
-                _render_broadcast_detail({
-                    "Decoded":    l2bd,
-                    "Broadcast":  l2bd.get("raw", ""),
-                })
-            else:
-                _kv("发送广播 T2a", None)
+            l1bd   = ev.get("L1BroadcastData")
+            l1_raw = l1bd.get("raw", "") if l1bd else ""
+            l2bd   = ev.get("L2BroadcastData")
+            l2_raw = l2bd.get("raw", "") if l2bd else ""
 
-            # T3 + decision
-            t3_str = ev.get("DecisionTime") or "—"
-            with ui.row().classes("gap-3 items-center mt-1"):
-                ui.label(f"决策唤醒 T3: {t3_str}").classes("text-sm")
-                ui.label(f"决策: {dec_label}").classes(
-                    f"font-semibold text-sm {dec_color}"
-                )
+            with ui.column().classes("gap-0.5 pl-1 font-mono text-xs"):
+                if l1_raw:
+                    with ui.row().classes("items-start gap-2"):
+                        ui.label("↑T1a").classes("text-blue-500 w-10 shrink-0")
+                        ui.label(l1_raw).classes("text-gray-700 break-all")
+                    broadcasts_to_parse.append(
+                        ("预唤醒广播 T1a", {"Decoded": l1bd, "Broadcast": l1_raw})
+                    )
+                if l2_raw:
+                    with ui.row().classes("items-start gap-2"):
+                        ui.label("↑T2a").classes("text-blue-500 w-10 shrink-0")
+                        ui.label(l2_raw).classes("text-gray-700 break-all")
+                    broadcasts_to_parse.append(
+                        ("唤醒广播 T2a", {"Decoded": l2bd, "Broadcast": l2_raw})
+                    )
+                for rf in recv_from:
+                    rf_udid  = rf.get("udid", "")
+                    rb_match = None
+                    for rb in ev.get("ReceivedBroadcasts", []):
+                        dec_rb = rb.get("Decoded") or {}
+                        u_list = dec_rb.get("udid") or []
+                        u_hex  = "".join(f"{b:02X}" for b in u_list) if u_list else ""
+                        if u_hex == rf_udid:
+                            rb_match = rb
+                            break
+                    raw_str = rb_match.get("Broadcast", "—") if rb_match else "—"
+                    dev_lbl = rf["device"]
+                    with ui.row().classes(
+                        "items-start gap-2 bg-green-50 rounded px-1"
+                    ):
+                        ui.label("↓收").classes("text-green-600 w-10 shrink-0")
+                        ui.label(raw_str).classes("text-green-800 break-all")
+                    if rb_match:
+                        broadcasts_to_parse.append(
+                            (f"收到广播 ({dev_lbl})", rb_match)
+                        )
+                for nr in no_recv:
+                    with ui.row().classes(
+                        "items-start gap-2 bg-yellow-50 rounded px-1"
+                    ):
+                        ui.label("✗").classes("text-yellow-600 w-10 shrink-0")
+                        ui.label(f"未收到 {nr['device']}").classes(
+                            "text-yellow-700 italic"
+                        )
+                if not l1_raw and not l2_raw and not recv_from and not no_recv:
+                    ui.label("无广播数据").classes("text-gray-400 italic")
 
-            # Alignment annotation
-            if recv_from:
-                parts = ", ".join(
-                    f"{d['device']}(UDID:{d['udid']})" for d in recv_from
-                )
-                ui.label(f"已收到广播: {parts}").classes(
-                    "text-xs text-green-600 mt-2"
-                )
-            if no_recv:
-                parts = ", ".join(
-                    f"{d['device']}(UDID:{d['udid']})" for d in no_recv
-                )
-                ui.label(f"未收到广播（时间估算）: {parts}").classes(
-                    "text-xs text-yellow-600"
-                )
+            # ── 解析按钮（懒加载）────────────────────────────────────────────
+            if broadcasts_to_parse:
+                parse_box = ui.column().classes("gap-1 mt-1")
+                parse_box.set_visibility(False)
+                _ps: dict = {"rendered": False, "shown": False}
+
+                def _toggle(box=parse_box, bcs=broadcasts_to_parse, ps=_ps):
+                    if not ps["rendered"]:
+                        with box:
+                            for lbl, bc in bcs:
+                                ui.label(lbl).classes(
+                                    "text-xs font-medium text-blue-700 mt-1"
+                                )
+                                _render_broadcast_detail(bc)
+                        ps["rendered"] = True
+                    ps["shown"] = not ps["shown"]
+                    box.set_visibility(ps["shown"])
+
+                ui.button("解析广播", on_click=_toggle, icon="science").props(
+                    "flat dense size=sm"
+                ).classes("text-indigo-600 self-start")
 
 
 def _render_aligned_sessions(
@@ -285,23 +414,61 @@ def _render_aligned_sessions(
     ui.label(f"唤醒对齐视图 (共 {len(sessions)} 次唤醒)").classes(
         "text-lg font-semibold text-gray-700"
     )
-    with ui.row().classes("gap-4 text-xs text-gray-500 mb-2"):
+    with ui.row().classes("gap-3 text-xs text-gray-500 mb-2 flex-wrap items-center"):
         ui.label("🟢 广播匹配")
         ui.label("🟡 时间估算(IQR内)")
         ui.label("🔴 时间估算(IQR外)")
         ui.label("⬜ 未参与")
+        ui.label("·")
+        ui.label("标题红=双响  黄=错响")
+
+    dev_info = _build_dev_info(sessions)
 
     for sess in sessions:
-        n_devs     = len(sess["entries"])
-        sess_label = (
-            f"唤醒 #{sess['session_id']}  {sess['anchor_time']}  ({n_devs}台设备)"
-        )
-        with ui.expansion(sess_label, icon="compare_arrows").classes(
-            "w-full border rounded shadow-sm mb-1"
-        ):
+        n_devs                       = len(sess["entries"])
+        status, status_lbl, status_css = _classify_session(sess["entries"])
+
+        exp = ui.expansion().classes("w-full border rounded shadow-sm mb-1")
+        with exp.add_slot("header"):
+            with ui.row().classes("items-center gap-3 w-full py-1"):
+                ui.icon("compare_arrows").classes("text-gray-500 text-base")
+                ui.label(
+                    f"唤醒 #{sess['session_id']}  {sess['anchor_time']}  ({n_devs}台设备)"
+                ).classes("text-sm flex-1")
+                if status_lbl:
+                    ui.label(status_lbl).classes(
+                        f"text-xs font-bold px-2 py-0.5 rounded {status_css}"
+                    )
+
+        with exp:
             with ui.column().classes("w-full gap-0 p-2"):
+
+                # ── 响应结果 summary ──────────────────────────────────────
+                with ui.row().classes(
+                    "gap-2 flex-wrap items-center px-1 py-1.5 bg-gray-50 rounded mb-2"
+                ):
+                    ui.label("响应结果").classes("text-xs font-bold text-gray-600")
+                    for dev in all_device_names:
+                        dentry = sess["entries"].get(dev)
+                        if dentry is None:
+                            continue
+                        ev    = dentry["event"]
+                        d     = ev.get("Decision")
+                        lbl   = "响应" if d == "true" else "不响应"
+                        dtype, udid = dev_info.get(dev, ("—", "未知"))
+                        badge = (
+                            "bg-green-100 text-green-700" if d == "true"
+                            else "bg-gray-100 text-gray-500"
+                        )
+                        ui.label(f"{dtype}·{udid}  {lbl}").classes(
+                            f"text-xs font-mono px-2 py-0.5 rounded {badge}"
+                        )
+
+                # ── device rows ───────────────────────────────────────────
                 for dev in all_device_names:
-                    _render_aligned_device_row(dev, sess["entries"].get(dev))
+                    _render_aligned_device_row(
+                        dev, sess["entries"].get(dev), dev_info
+                    )
 
 
 # ── main page ─────────────────────────────────────────────────────────────────
@@ -452,7 +619,7 @@ def index():
                     udid_part = f"  UDID:{device_udid}" if device_udid else ""
                     type_part = f"  [{device_type_name}]" if device_type_name else ""
                     with ui.expansion(
-                        f"📱 {device_name}{type_part}{udid_part}  ({len(events)} 次唤醒)",
+                        f"📱{type_part}{udid_part}  ({len(events)} 次唤醒)",
                         icon="devices",
                     ).classes("w-full border rounded shadow-sm"):
                         if not events:

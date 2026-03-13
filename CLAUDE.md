@@ -47,13 +47,15 @@ NiceGUI UI，端口 8080，单页应用。
 | `_render_broadcast_detail(bc)` | 渲染一条广播的解析结果（类型/设备/时间戳/UDID/声强/置信度/抑制） |
 | `_render_event_card(idx, o1)` | 渲染解析视图中一条唤醒事件展开卡（T1/T1a/T2/T2a/T3 + 广播） |
 | `_kv(label, value)` | 渲染 key-value 行，值为 None 时显示 "—" |
-| `_render_aligned_device_row(dev_name, entry)` | 渲染对齐视图中单台设备的展开行（含 T1/T1a/T2/T2a/T3 详情） |
+| `_classify_session(entries)` | 判断唤醒响应模式：normal / double(双响) / wrong(错响) |
+| `_build_dev_info(sessions)` | 从 sessions 数据构建 `{dev_name: (dtype_name, udid_hex)}` 映射 |
+| `_render_aligned_device_row(dev_name, entry, dev_info)` | 渲染对齐视图中单台设备的展开行 |
 | `_render_aligned_sessions(sessions, all_device_names)` | 渲染完整对齐视图（expansion 列表） |
 
 **`index()` 内部结构：**
 1. 设备路径输入行（`add_device_row`）
 2. "开始解析"按钮 → `on_parse()` — 后台线程 `parse_device_logs`，结果存入 `_state["all_results"]`
-3. 解析结果区：每台设备一个 `ui.expansion`，展开后每条唤醒事件调用 `_render_event_card`
+3. 解析结果区：每台设备一个 `ui.expansion`（标题 `📱 [{deviceTypeName}]  UDID:{hex}  (N次唤醒)`，**不含目录名**），展开后每条唤醒事件调用 `_render_event_card`
 4. "对齐分析"按钮 → `on_align()` — 调用 `align_sessions`，结果传入 `_render_aligned_sessions`
 
 **置信度常量（`_CONF_BORDER`, `_CONF_ICON`）：**
@@ -61,6 +63,19 @@ NiceGUI UI，端口 8080，单页应用。
 - yellow → 🟡 / `border-yellow-400`
 - red → 🔴 / `border-red-400`
 - isolated → 🔵 / `border-gray-300`
+
+**设备响应优先级（`_DEVICE_PRIORITY`）：**
+```python
+{240:10, 230:9, 220:8, 210:7, 150:6, 110:5, 80:4, 50:3, 40:2, 30:1}
+# 车机 > 移动智慧屏 > OMELCD > 音箱 > 大屏 > 手表 > 耳机 > 手机 > 平板 > PC
+```
+
+**`_classify_session` 判断规则：**
+- 0 响应 → normal
+- 1 响应 + 最高优先级设备 → normal
+- 1 响应 + 非最高优先级设备 → **错响**（黄）
+- 2+ 响应 + 最高优先级设备在内 → **双响**（红）
+- 2+ 响应 + 最高优先级设备不在内 → **错响**（黄）
 
 ---
 
@@ -176,9 +191,9 @@ T2b 时间窗：[anchor_ms, T4_ms]  — 收到广播（去重）
 
 ### 解析视图
 
-每台设备一个 `ui.expansion`，标题格式：
+每台设备一个 `ui.expansion`，标题格式（**不含目录名**）：
 ```
-📱 {device_dir_name}  [{deviceTypeName}]  UDID:{hex}  (N次唤醒)
+📱  [{deviceTypeName}]  UDID:{hex}  (N次唤醒)
 ```
 
 展开后每条唤醒事件调用 `_render_event_card`，左右两列：
@@ -188,19 +203,25 @@ T2b 时间窗：[anchor_ms, T4_ms]  — 收到广播（去重）
 
 ### 对齐视图
 
-按会话（session）列出 `ui.expansion`，标题：
+按会话（session）列出 `ui.expansion`（**自定义 header slot**），标题：
 ```
-唤醒 #{session_id}  {anchor_time}  (N台设备)
+唤醒 #{session_id}  {anchor_time}  (N台设备)  [双响/错响]
+```
+session 展开后：
+1. **响应结果摘要行**：`{dtype}·{udid}  响应/不响应` 徽章（绿/灰），所有参与设备并排显示
+2. **设备行**（每台一个可展开 `_render_aligned_device_row`）
+
+设备行 header（**自定义 header slot**）：
+```
+{置信度图标} {deviceTypeName}  UDID:{hex}    [响应/不响应]
 ```
 
-展开后每台设备一行（`_render_aligned_device_row`），标题格式：
-```
-{置信度图标} {deviceTypeName}  UDID:{hex}  ({device_dir_name})
-```
+设备行展开内容（三段）：
+- **时间栏**：T1/T1a/T2/T2a/T3，仅显示时间字符串
+- **广播栏**：`↑T1a` `↑T2a` 发送广播 raw bytes（蓝色）；`↓收` 已收广播（绿底）；`✗` 未收广播（黄底）
+- **解析广播**按钮（懒加载，点击后展开 `_render_broadcast_detail`）
 
-展开后显示：T1 → T1a+广播解析 → T2 → T2a+广播解析 → T3+决策 → 已收到/未收到广播注释。
-
-缺席设备显示为静态灰色行（不可展开）。
+缺席设备显示为静态灰色行（`{dtype}  UDID:{udid}  缺席`，**不含目录名**）。
 
 ---
 
