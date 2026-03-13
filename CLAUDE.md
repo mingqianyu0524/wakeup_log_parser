@@ -32,9 +32,10 @@
    - Phase 3：构建 AlignedSession，worst-link 置信度
 
 公开 API：
-- `parse_device_logs(device_hilog_dir: Path) -> list[dict]` — 返回 O1 列表
+- `parse_device_logs(device_hilog_dir: Path, progress_cb=None) -> list[dict]` — 返回 O1 列表；`progress_cb(current, total, filename)` 在每个文件开始前调用
 - `align_sessions(all_results: dict[str, list[dict]]) -> list[dict]` — 返回 AlignedSession 列表
 - `_DEVICE_TYPE_NAMES: dict[int, str]` — `{50:"手机", 110:"手表", 240:"车机"}`
+- `is_log_file(path: Path) -> bool` — 判断文件是否为日志文件（`hiapplogcat-log*` 或 `hilog*.txt`）
 
 ### `wakeup_ui.py`
 
@@ -50,13 +51,60 @@ NiceGUI UI，端口 8080，单页应用。
 | `_classify_session(entries)` | 判断唤醒响应模式：normal / double(双响) / wrong(错响) |
 | `_build_dev_info(sessions)` | 从 sessions 数据构建 `{dev_name: (dtype_name, udid_hex)}` 映射 |
 | `_render_aligned_device_row(dev_name, entry, dev_info)` | 渲染对齐视图中单台设备的展开行 |
-| `_render_aligned_sessions(sessions, all_device_names)` | 渲染完整对齐视图（expansion 列表） |
+| `_render_session_list(sessions, all_device_names, dev_info, ...)` | 渲染过滤后的 session 列表（纯渲染，无状态），由 `_render_aligned_sessions` 的 `_refresh()` 调用 |
+| `_render_aligned_sessions(sessions, all_device_names)` | 渲染完整对齐视图：过滤栏 + 响应式 `sess_col` 容器 |
 
 **`index()` 内部结构：**
 1. 设备路径输入行（`add_device_row`）
-2. "开始解析"按钮 → `on_parse()` — 后台线程 `parse_device_logs`，结果存入 `_state["all_results"]`
+2. "开始解析"按钮 → `on_parse()` — 后台线程 `parse_device_logs`，结果存入 `_state["all_results"]`；带进度条 UI
 3. 解析结果区：每台设备一个 `ui.expansion`（标题 `📱 [{deviceTypeName}]  UDID:{hex}  (N次唤醒)`，**不含目录名**），展开后每条唤醒事件调用 `_render_event_card`
 4. "对齐分析"按钮 → `on_align()` — 调用 `align_sessions`，结果传入 `_render_aligned_sessions`
+
+**解析进度条实现（`on_parse()` 内）：**
+```python
+# 预计算各设备文件数
+file_counts = {path: sum(1 for f in Path(path).iterdir() if is_log_file(f)) ...}
+
+# 共享进度状态（GIL 保证线程安全的简单赋值）
+_prog = {"current": 0, "total": 0, "file": ""}
+
+def _cb(c, t, fname):
+    _prog["current"] = c
+    _prog["total"]   = t
+    _prog["file"]    = fname
+
+# UI 定时器（0.15s）读取 _prog 更新进度条
+def _tick():
+    prog_bar.value = _prog["current"] / _prog["total"] if _prog["total"] > 0 else 0.0
+    prog_files.set_text(f"{_prog['current']}/{_prog['total']}  {_prog['file']}")
+
+progress_timer = ui.timer(0.15, _tick, active=True)
+
+# 每个设备顺序 await
+for hilog_dir, path_str in device_paths:
+    await run.io_bound(parse_device_logs, hilog_dir, _cb)
+
+progress_timer.cancel()
+```
+
+**对齐视图过滤器（`_render_aligned_sessions()` 内）：**
+- `t_start` / `t_end`：`ui.input`，格式 `MM-DD HH:MM`（精确到分钟）
+- `cb_normal` / `cb_double` / `cb_wrong`：`ui.checkbox`
+- "应用"按钮触发 `_refresh()`；checkbox 变化也触发 `_refresh()`
+- `_matches(sess)` 过滤逻辑：
+  - `anchor_time[:11]`（取 `"MM-DD HH:MM"`）与 `t_start` / `t_end` 字符串比较（空则跳过）
+  - 按 `_classify_session(entries)[0]`（status: "normal"/"double"/"wrong"）检查 checkbox
+- `_refresh()` = `sess_col.clear()` + 在 `sess_col` 内调用 `_render_session_list(filtered_sessions, ...)`
+
+**bug fix — 响应结果行 `—·未知`：**
+- 根因：`_build_dev_info` 从第一个 session 读取 dtype/UDID；若那个 session 的广播数据缺失，缓存值为 `("—","未知")`，后续 session 的真实数据被掩盖。
+- 修复：在 `_render_session_list` 中，当 `dentry is not None`，直接读取 `ev`（当前 session 的事件对象）：
+  ```python
+  dtype    = ev.get("deviceTypeName") or "—"
+  udid_raw = ev.get("DeviceUdid")
+  udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+  ```
+  缺席设备仍使用 `dev_info` 缓存。
 
 **置信度常量（`_CONF_BORDER`, `_CONF_ICON`）：**
 - green → 🟢 / `border-green-400`
@@ -203,12 +251,17 @@ T2b 时间窗：[anchor_ms, T4_ms]  — 收到广播（去重）
 
 ### 对齐视图
 
+顶部**过滤栏**：
+- 时间段：`开始 MM-DD HH:MM` / `结束 MM-DD HH:MM` 输入框 + "应用"按钮
+- 类型复选框：`正常` / `双响` / `错响`（默认全选）
+- 响应式 `sess_col` 容器，按过滤条件实时更新
+
 按会话（session）列出 `ui.expansion`（**自定义 header slot**），标题：
 ```
 唤醒 #{session_id}  {anchor_time}  (N台设备)  [双响/错响]
 ```
 session 展开后：
-1. **响应结果摘要行**：`{dtype}·{udid}  响应/不响应` 徽章（绿/灰），所有参与设备并排显示
+1. **响应结果摘要行**：`{dtype}·{udid}  响应/不响应` 徽章（绿/灰），所有参与设备并排显示（**直接读自当前 session 的 event，不使用 dev_info 缓存**）
 2. **设备行**（每台一个可展开 `_render_aligned_device_row`）
 
 设备行 header（**自定义 header slot**）：

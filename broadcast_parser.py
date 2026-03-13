@@ -400,13 +400,15 @@ def _build_o1(ev: dict, sent: list[dict], recv: list[dict]) -> dict:
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def parse_device_logs(device_hilog_dir: Path) -> list[dict]:
+def parse_device_logs(device_hilog_dir: Path, progress_cb=None) -> list[dict]:
     """
     Parse all log files in *device_hilog_dir* and return a list of O1 objects,
     one per detected wakeup event.
 
     Args:
         device_hilog_dir: path to <device>/hilog/ directory
+        progress_cb:      optional callable(current: int, total: int, filename: str)
+                          called before each file is scanned (1-indexed current)
     """
     log_files = sorted(
         f for f in device_hilog_dir.iterdir()
@@ -415,6 +417,7 @@ def parse_device_logs(device_hilog_dir: Path) -> list[dict]:
     if not log_files:
         return []
 
+    total_files = len(log_files)
     all_wakeup: list[dict] = []
     all_sent:   list[dict] = []
     all_recv:   list[dict] = []
@@ -422,7 +425,9 @@ def parse_device_logs(device_hilog_dir: Path) -> list[dict]:
     # Thread pending state across files so wakeup events that straddle a
     # file boundary are completed rather than split into two fragments.
     carry: dict | None = None
-    for lf in log_files:
+    for i, lf in enumerate(log_files):
+        if progress_cb:
+            progress_cb(i + 1, total_files, lf.name)
         w, s, r, carry = _scan_file(lf, initial_pending=carry)
         all_wakeup.extend(w)
         all_sent.extend(s)

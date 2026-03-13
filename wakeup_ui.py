@@ -20,6 +20,7 @@ from nicegui import app, run, ui
 from broadcast_parser import (
     _DEVICE_TYPE_NAMES,
     align_sessions,
+    is_log_file,
     parse_device_logs,
 )
 
@@ -402,30 +403,18 @@ def _render_aligned_device_row(
                 ).classes("text-indigo-600 self-start")
 
 
-def _render_aligned_sessions(
+def _render_session_list(
     sessions: list[dict],
     all_device_names: list[str],
+    dev_info: dict[str, tuple[str, str]],
 ) -> None:
-    """Render the full cross-device alignment view as an expansion list."""
+    """Render a (possibly filtered) list of aligned session expansions."""
     if not sessions:
-        ui.label("无对齐结果").classes("text-gray-400")
+        ui.label("无匹配结果").classes("text-gray-400 text-sm italic")
         return
 
-    ui.label(f"唤醒对齐视图 (共 {len(sessions)} 次唤醒)").classes(
-        "text-lg font-semibold text-gray-700"
-    )
-    with ui.row().classes("gap-3 text-xs text-gray-500 mb-2 flex-wrap items-center"):
-        ui.label("🟢 广播匹配")
-        ui.label("🟡 时间估算(IQR内)")
-        ui.label("🔴 时间估算(IQR外)")
-        ui.label("⬜ 未参与")
-        ui.label("·")
-        ui.label("标题红=双响  黄=错响")
-
-    dev_info = _build_dev_info(sessions)
-
     for sess in sessions:
-        n_devs                       = len(sess["entries"])
+        n_devs                         = len(sess["entries"])
         status, status_lbl, status_css = _classify_session(sess["entries"])
 
         exp = ui.expansion().classes("w-full border rounded shadow-sm mb-1")
@@ -452,11 +441,14 @@ def _render_aligned_sessions(
                         dentry = sess["entries"].get(dev)
                         if dentry is None:
                             continue
-                        ev    = dentry["event"]
-                        d     = ev.get("Decision")
-                        lbl   = "响应" if d == "true" else "不响应"
-                        dtype, udid = dev_info.get(dev, ("—", "未知"))
-                        badge = (
+                        ev       = dentry["event"]
+                        d        = ev.get("Decision")
+                        lbl      = "响应" if d == "true" else "不响应"
+                        # Read directly from this event (not the cached dev_info)
+                        dtype    = ev.get("deviceTypeName") or "—"
+                        udid_raw = ev.get("DeviceUdid")
+                        udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+                        badge    = (
                             "bg-green-100 text-green-700" if d == "true"
                             else "bg-gray-100 text-gray-500"
                         )
@@ -469,6 +461,87 @@ def _render_aligned_sessions(
                     _render_aligned_device_row(
                         dev, sess["entries"].get(dev), dev_info
                     )
+
+
+def _render_aligned_sessions(
+    sessions: list[dict],
+    all_device_names: list[str],
+) -> None:
+    """Render the full cross-device alignment view with filter bar + expansion list."""
+    if not sessions:
+        ui.label("无对齐结果").classes("text-gray-400")
+        return
+
+    dev_info = _build_dev_info(sessions)
+
+    ui.label(f"唤醒对齐视图 (共 {len(sessions)} 次唤醒)").classes(
+        "text-lg font-semibold text-gray-700"
+    )
+    with ui.row().classes("gap-3 text-xs text-gray-500 mb-2 flex-wrap items-center"):
+        ui.label("🟢 广播匹配")
+        ui.label("🟡 时间估算(IQR内)")
+        ui.label("🔴 时间估算(IQR外)")
+        ui.label("⬜ 未参与")
+        ui.label("·")
+        ui.label("标题红=双响  黄=错响")
+
+    # ── filter bar ────────────────────────────────────────────────────────────
+    with ui.row().classes(
+        "gap-2 items-center flex-wrap border rounded p-2 mb-2 bg-gray-50"
+    ):
+        ui.label("过滤").classes("text-xs font-bold text-gray-500 shrink-0")
+        t_start = (
+            ui.input(placeholder="开始 MM-DD HH:MM", value="")
+            .props("dense clearable")
+            .classes("w-40")
+        )
+        ui.label("~").classes("text-xs text-gray-400 shrink-0")
+        t_end = (
+            ui.input(placeholder="结束 MM-DD HH:MM", value="")
+            .props("dense clearable")
+            .classes("w-40")
+        )
+        ui.button("应用", icon="filter_list", on_click=lambda: _refresh()).props(
+            "flat dense size=sm"
+        ).classes("text-blue-600 shrink-0")
+        ui.separator().props("vertical inset").classes("mx-1 shrink-0")
+        cb_normal = ui.checkbox("正常",  value=True)
+        cb_double = ui.checkbox("双响", value=True)
+        cb_wrong  = ui.checkbox("错响",  value=True)
+
+    counter_lbl = ui.label("").classes("text-xs text-gray-500 mb-1")
+    sess_col    = ui.column().classes("w-full gap-0")
+
+    def _matches(sess: dict) -> bool:
+        anchor        = sess["anchor_time"]  # "MM-DD HH:MM:SS.mmm"
+        anchor_prefix = anchor[:11]          # "MM-DD HH:MM"
+        ts = (t_start.value or "").strip()
+        te = (t_end.value   or "").strip()
+        if ts and anchor_prefix < ts:
+            return False
+        if te and anchor_prefix > te:
+            return False
+        status, _, _ = _classify_session(sess["entries"])
+        if status == "normal" and not cb_normal.value:
+            return False
+        if status == "double" and not cb_double.value:
+            return False
+        if status == "wrong" and not cb_wrong.value:
+            return False
+        return True
+
+    def _refresh() -> None:
+        filtered = [s for s in sessions if _matches(s)]
+        counter_lbl.set_text(f"显示 {len(filtered)} / {len(sessions)} 次唤醒")
+        sess_col.clear()
+        with sess_col:
+            _render_session_list(filtered, all_device_names, dev_info)
+
+    cb_normal.on_value_change(lambda _: _refresh())
+    cb_double.on_value_change(lambda _: _refresh())
+    cb_wrong.on_value_change(lambda _: _refresh())
+
+    _refresh()  # Initial render (no filter applied)
 
 
 # ── main page ─────────────────────────────────────────────────────────────────
@@ -557,6 +630,26 @@ def index():
                 ui.notify("请先添加设备日志路径", type="warning")
                 return
 
+            # Build (device_name, hilog_dir) pairs
+            path_pairs: list[tuple[str, Path]] = []
+            for p in paths:
+                hilog_dir   = Path(p)
+                device_name = (
+                    hilog_dir.parent.name
+                    if hilog_dir.name == "hilog"
+                    else hilog_dir.name
+                )
+                path_pairs.append((device_name, hilog_dir))
+
+            # Pre-count log files per device (fast, synchronous)
+            file_counts: dict[str, int] = {
+                dev: (
+                    sum(1 for f in hd.iterdir() if f.is_file() and is_log_file(f))
+                    if hd.is_dir() else 0
+                )
+                for dev, hd in path_pairs
+            }
+
             parse_btn.props("loading")
             results_label.set_text("正在解析…")
             result_area.clear()
@@ -564,29 +657,60 @@ def index():
             align_btn.set_visibility(False)
             _state["all_results"] = {}
 
-            # Run blocking I/O in thread pool
+            # ── progress UI ───────────────────────────────────────────────────
+            with result_area:
+                prog_device = ui.label("").classes(
+                    "text-sm text-gray-700 font-medium"
+                )
+                prog_bar   = ui.linear_progress(value=0).classes("w-full")
+                prog_files = ui.label("").classes("text-xs text-gray-500")
+                prog_wait  = ui.label("").classes("text-xs text-gray-400 italic mt-1")
+
+            # Shared state: background thread writes, timer reads (GIL-safe)
+            _prog: dict = {"current": 0, "total": 0, "file": ""}
+
+            def _tick() -> None:
+                t = _prog["total"]
+                c = _prog["current"]
+                prog_bar.value = c / t if t > 0 else 0.0
+                prog_files.set_text(f"{c}/{t}  {_prog['file']}" if t > 0 else "")
+
+            progress_timer = ui.timer(0.15, _tick, active=True)
+
+            # ── parse loop ────────────────────────────────────────────────────
             all_results: dict[str, list[dict]] = {}
-            errors: list[str] = []
+            errors:      list[str] = []
 
-            def do_parse():
-                for p in paths:
-                    hilog_dir = Path(p)
-                    device_name = (
-                        hilog_dir.parent.name
-                        if hilog_dir.name == "hilog"
-                        else hilog_dir.name
-                    )
-                    if not hilog_dir.is_dir():
-                        errors.append(f"{p}: 目录不存在")
-                        continue
-                    try:
-                        events = parse_device_logs(hilog_dir)
-                        all_results[device_name] = events
-                    except Exception as exc:
-                        errors.append(f"{device_name}: {exc}")
+            for idx, (device_name, hilog_dir) in enumerate(path_pairs):
+                remaining = [
+                    str(path_pairs[i][1]) for i in range(idx + 1, len(path_pairs))
+                ]
+                prog_device.set_text(f"正在解析: {hilog_dir}")
+                prog_wait.set_text(
+                    "等待: " + ", ".join(remaining) if remaining else ""
+                )
+                _prog["current"] = 0
+                _prog["total"]   = file_counts.get(device_name, 0)
+                _prog["file"]    = ""
 
-            await run.io_bound(do_parse)
+                if not hilog_dir.is_dir():
+                    errors.append(f"{hilog_dir}: 目录不存在")
+                    continue
 
+                def _cb(current: int, total: int, filename: str) -> None:
+                    _prog["current"] = current
+                    _prog["total"]   = total
+                    _prog["file"]    = filename
+
+                try:
+                    events = await run.io_bound(parse_device_logs, hilog_dir, _cb)
+                    all_results[device_name] = events
+                except Exception as exc:
+                    errors.append(f"{device_name}: {exc}")
+
+            # ── stop progress, render results ─────────────────────────────────
+            progress_timer.cancel()
+            result_area.clear()
             parse_btn.props(remove="loading")
 
             with result_area:
@@ -604,7 +728,6 @@ def index():
                 )
 
                 for device_name, events in all_results.items():
-                    # Derive UDID and device type from the first event that has them
                     device_udid      = None
                     device_type_name = None
                     for ev in events:
