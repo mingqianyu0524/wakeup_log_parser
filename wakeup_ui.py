@@ -162,6 +162,41 @@ def _kv(label: str, value) -> None:
     ui.label(f"{label}: {display}").classes("text-sm")
 
 
+def _parse_time_ms(t: str | None) -> int | None:
+    """Parse 'MM-DD HH:MM:SS.mmm' → absolute ms (suitable for delta calculation)."""
+    if not t:
+        return None
+    try:
+        date_str, time_str = t.split(" ", 1)
+        month, day = map(int, date_str.split("-"))
+        hms, ms_str = time_str.rsplit(".", 1)
+        h, m, s = map(int, hms.split(":"))
+        return (((month * 31 + day) * 86400 + h * 3600 + m * 60 + s) * 1000
+                + int(ms_str))
+    except Exception:
+        return None
+
+
+def _inline_parse_btn(label: str, bc: dict) -> None:
+    """Lazy-rendered inline 解析 button for a single broadcast entry."""
+    detail_box = ui.column().classes("gap-0 pl-2 mt-0.5")
+    detail_box.set_visibility(False)
+    _ps: dict = {"rendered": False, "shown": False}
+
+    def _toggle(box=detail_box, b=bc, ps=_ps, lbl=label):
+        if not ps["rendered"]:
+            with box:
+                ui.label(lbl).classes("text-xs font-medium text-blue-700")
+                _render_broadcast_detail(b)
+            ps["rendered"] = True
+        ps["shown"] = not ps["shown"]
+        box.set_visibility(ps["shown"])
+
+    ui.button("解析", on_click=_toggle, icon="science").props(
+        "flat dense size=xs"
+    ).classes("text-indigo-500 self-start mt-0.5")
+
+
 # ── alignment view helpers ────────────────────────────────────────────────────
 
 _CONF_BORDER = {
@@ -313,12 +348,41 @@ def _render_aligned_device_row(
             ui.label("时间").classes(
                 "text-xs font-bold text-gray-400 uppercase tracking-wide"
             )
+            anchor_ms = (
+                _parse_time_ms(ev.get("L1WakeupTime"))
+                or _parse_time_ms(ev.get("L2WakeupTime"))
+            )
+
+            def _row_time(label: str, t_str: str | None) -> None:
+                ms = _parse_time_ms(t_str)
+                with ui.row().classes("items-baseline gap-1 flex-nowrap"):
+                    ui.label(label + ":").classes(
+                        "text-sm text-gray-600 w-36 shrink-0"
+                    )
+                    ui.label(t_str or "—").classes("text-sm font-mono")
+                    if (ms is not None and anchor_ms is not None
+                            and ms != anchor_ms):
+                        delta = ms - anchor_ms
+                        ui.label(f"【+{delta}ms】").classes(
+                            "text-xs text-gray-400 italic"
+                        )
+
+            recv_list = ev.get("ReceivedBroadcasts", [])
             with ui.column().classes("gap-0 pl-1"):
-                _kv("T1   一级唤醒",     ev.get("L1WakeupTime"))
-                _kv("T1a  预唤醒广播",   ev.get("L1BroadcastTime"))
-                _kv("T2   二级唤醒",     ev.get("L2WakeupTime"))
-                _kv("T2a  唤醒广播",     ev.get("L2BroadcastTime"))
-                _kv("T3   决策",         ev.get("DecisionTime"))
+                _row_time("T1   一级唤醒",       ev.get("L1WakeupTime"))
+                _row_time("T1a  预唤醒广播",      ev.get("L1BroadcastTime"))
+                _row_time("T2   二级唤醒",        ev.get("L2WakeupTime"))
+                _row_time("T2a  发出唤醒广播",    ev.get("L2BroadcastTime"))
+                if recv_list:
+                    earliest = min(
+                        (r.get("ReceiveTime") for r in recv_list
+                         if r.get("ReceiveTime")),
+                        default=None,
+                    )
+                    _row_time(
+                        f"T2b  接收广播（{len(recv_list)}条）", earliest
+                    )
+                _row_time("T3   决策",            ev.get("DecisionTime"))
 
             ui.separator().classes("my-0.5")
 
@@ -326,81 +390,66 @@ def _render_aligned_device_row(
             ui.label("广播数据").classes(
                 "text-xs font-bold text-gray-400 uppercase tracking-wide"
             )
-            broadcasts_to_parse: list[tuple[str, dict]] = []
-
             l1bd   = ev.get("L1BroadcastData")
             l1_raw = l1bd.get("raw", "") if l1bd else ""
             l2bd   = ev.get("L2BroadcastData")
             l2_raw = l2bd.get("raw", "") if l2bd else ""
 
-            with ui.column().classes("gap-0.5 pl-1 font-mono text-xs"):
+            with ui.column().classes("gap-1 pl-1 font-mono text-xs"):
                 if l1_raw:
-                    with ui.row().classes("items-start gap-2"):
+                    with ui.row().classes("items-start gap-2 flex-wrap"):
                         ui.label("↑T1a").classes("text-blue-500 w-10 shrink-0")
-                        ui.label(l1_raw).classes("text-gray-700 break-all")
-                    broadcasts_to_parse.append(
-                        ("预唤醒广播 T1a", {"Decoded": l1bd, "Broadcast": l1_raw})
-                    )
+                        ui.label(l1_raw).classes("text-gray-700 break-all flex-1")
+                        _inline_parse_btn(
+                            "预唤醒广播 T1a",
+                            {"Decoded": l1bd, "Broadcast": l1_raw},
+                        )
                 if l2_raw:
-                    with ui.row().classes("items-start gap-2"):
+                    with ui.row().classes("items-start gap-2 flex-wrap"):
                         ui.label("↑T2a").classes("text-blue-500 w-10 shrink-0")
-                        ui.label(l2_raw).classes("text-gray-700 break-all")
-                    broadcasts_to_parse.append(
-                        ("唤醒广播 T2a", {"Decoded": l2bd, "Broadcast": l2_raw})
-                    )
+                        ui.label(l2_raw).classes("text-gray-700 break-all flex-1")
+                        _inline_parse_btn(
+                            "唤醒广播 T2a",
+                            {"Decoded": l2bd, "Broadcast": l2_raw},
+                        )
                 for rf in recv_from:
-                    rf_udid  = rf.get("udid", "")
-                    rb_match = None
+                    rf_udid      = rf.get("udid", "")
+                    rf_dtype, _  = dev_info.get(rf["device"], ("—", ""))
+                    rb_match     = None
                     for rb in ev.get("ReceivedBroadcasts", []):
                         dec_rb = rb.get("Decoded") or {}
-                        u_list = dec_rb.get("udid") or []
-                        u_hex  = "".join(f"{b:02X}" for b in u_list) if u_list else ""
+                        u_hex  = "".join(
+                            f"{b:02X}" for b in (dec_rb.get("udid") or [])
+                        )
                         if u_hex == rf_udid:
                             rb_match = rb
                             break
-                    raw_str = rb_match.get("Broadcast", "—") if rb_match else "—"
-                    dev_lbl = rf["device"]
+                    raw_str     = rb_match.get("Broadcast", "—") if rb_match else "—"
+                    dev_display = f"[{rf_dtype}] UDID:{rf_udid}"
                     with ui.row().classes(
-                        "items-start gap-2 bg-green-50 rounded px-1"
+                        "items-start gap-2 bg-green-50 rounded px-1 flex-wrap"
                     ):
                         ui.label("↓收").classes("text-green-600 w-10 shrink-0")
-                        ui.label(raw_str).classes("text-green-800 break-all")
-                    if rb_match:
-                        broadcasts_to_parse.append(
-                            (f"收到广播 ({dev_lbl})", rb_match)
-                        )
+                        with ui.column().classes("gap-0 flex-1"):
+                            ui.label(dev_display).classes(
+                                "text-xs text-green-700 font-semibold not-italic"
+                            )
+                            ui.label(raw_str).classes("text-green-800 break-all")
+                        if rb_match:
+                            _inline_parse_btn(f"收到广播 [{rf_dtype}]", rb_match)
                 for nr in no_recv:
+                    nr_dtype, _ = dev_info.get(nr["device"], ("—", ""))
+                    nr_udid     = nr.get("udid", "")
+                    dev_display = f"[{nr_dtype}] UDID:{nr_udid}"
                     with ui.row().classes(
                         "items-start gap-2 bg-yellow-50 rounded px-1"
                     ):
                         ui.label("✗").classes("text-yellow-600 w-10 shrink-0")
-                        ui.label(f"未收到 {nr['device']}").classes(
+                        ui.label(f"未收到 {dev_display}").classes(
                             "text-yellow-700 italic"
                         )
                 if not l1_raw and not l2_raw and not recv_from and not no_recv:
                     ui.label("无广播数据").classes("text-gray-400 italic")
-
-            # ── 解析按钮（懒加载）────────────────────────────────────────────
-            if broadcasts_to_parse:
-                parse_box = ui.column().classes("gap-1 mt-1")
-                parse_box.set_visibility(False)
-                _ps: dict = {"rendered": False, "shown": False}
-
-                def _toggle(box=parse_box, bcs=broadcasts_to_parse, ps=_ps):
-                    if not ps["rendered"]:
-                        with box:
-                            for lbl, bc in bcs:
-                                ui.label(lbl).classes(
-                                    "text-xs font-medium text-blue-700 mt-1"
-                                )
-                                _render_broadcast_detail(bc)
-                        ps["rendered"] = True
-                    ps["shown"] = not ps["shown"]
-                    box.set_visibility(ps["shown"])
-
-                ui.button("解析广播", on_click=_toggle, icon="science").props(
-                    "flat dense size=sm"
-                ).classes("text-indigo-600 self-start")
 
 
 def _render_session_list(
@@ -672,8 +721,12 @@ def index():
             def _tick() -> None:
                 t = _prog["total"]
                 c = _prog["current"]
-                prog_bar.value = c / t if t > 0 else 0.0
-                prog_files.set_text(f"{c}/{t}  {_prog['file']}" if t > 0 else "")
+                ratio = c / t if t > 0 else 0.0
+                prog_bar.value = ratio
+                pct = round(ratio * 100)
+                prog_files.set_text(
+                    f"{pct}%  {c}/{t}  {_prog['file']}" if t > 0 else ""
+                )
 
             progress_timer = ui.timer(0.15, _tick, active=True)
 

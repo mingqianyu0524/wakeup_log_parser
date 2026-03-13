@@ -26,8 +26,10 @@ Broadcast payload format (15 bytes, indices 0-based, timestamp big-endian):
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+_CST = timezone(timedelta(hours=8))   # China Standard Time (UTC+8)
 
 # ── log-line timestamp ────────────────────────────────────────────────────────
 
@@ -129,7 +131,7 @@ def decode_broadcast(b: list[int]) -> dict:
 
     ts_unix = int.from_bytes(b[2:6], "big")
     try:
-        ts_human = datetime.fromtimestamp(ts_unix, tz=timezone.utc).strftime(
+        ts_human = datetime.fromtimestamp(ts_unix, tz=_CST).strftime(
             "%Y年%m月%d日%H时%M分%S秒"
         )
     except (OSError, OverflowError, ValueError):
