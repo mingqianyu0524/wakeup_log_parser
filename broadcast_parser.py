@@ -229,6 +229,8 @@ def _scan_file(
                     elif pending["t2"] is None:
                         pending["t2"]    = ts
                         pending["t2_ms"] = ts_ms
+                    elif pending["t2"] == ts:
+                        pass  # duplicate T2 line with same timestamp, ignore
                     else:
                         wakeup_events.append(pending)
                         pending = {
