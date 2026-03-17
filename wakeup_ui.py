@@ -415,37 +415,56 @@ def _render_aligned_device_row(
                 for rf in recv_from:
                     rf_udid      = rf.get("udid", "")
                     rf_dtype, _  = dev_info.get(rf["device"], ("—", ""))
-                    rb_match     = None
-                    for rb in ev.get("ReceivedBroadcasts", []):
-                        dec_rb = rb.get("Decoded") or {}
-                        u_hex  = "".join(
-                            f"{b:02X}" for b in (dec_rb.get("udid") or [])
-                        )
-                        if u_hex == rf_udid:
-                            rb_match = rb
-                            break
-                    raw_str     = rb_match.get("Broadcast", "—") if rb_match else "—"
-                    dev_display = f"[{rf_dtype}] UDID:{rf_udid}"
-                    with ui.row().classes(
-                        "items-start gap-2 bg-green-50 rounded px-1 flex-wrap"
-                    ):
-                        ui.label("↓收").classes("text-green-600 w-10 shrink-0")
-                        with ui.column().classes("gap-0 flex-1"):
+                    dev_display  = f"[{rf_dtype}] UDID:{rf_udid}"
+                    # Find ALL received broadcasts from this peer (matched by UDID)
+                    rb_list = [
+                        rb for rb in ev.get("ReceivedBroadcasts", [])
+                        if rf_udid and "".join(
+                            f"{b:02X}" for b in
+                            ((rb.get("Decoded") or {}).get("udid") or [])
+                        ) == rf_udid
+                    ]
+                    if not rb_list:
+                        # Fallback: show device row without raw bytes
+                        with ui.row().classes(
+                            "items-start gap-2 bg-green-50 rounded px-1"
+                        ):
+                            ui.label("↓收").classes("text-green-600 w-10 shrink-0")
                             ui.label(dev_display).classes(
                                 "text-xs text-green-700 font-semibold not-italic"
                             )
-                            ui.label(raw_str).classes("text-green-800 break-all")
-                        if rb_match:
-                            _inline_parse_btn(f"收到广播 [{rf_dtype}]", rb_match)
+                    else:
+                        for rb in rb_list:
+                            raw_str = rb.get("Broadcast", "—")
+                            with ui.row().classes(
+                                "items-start gap-2 bg-green-50 rounded px-1 flex-wrap"
+                            ):
+                                ui.label("↓收").classes(
+                                    "text-green-600 w-10 shrink-0"
+                                )
+                                with ui.column().classes("gap-0 flex-1"):
+                                    ui.label(dev_display).classes(
+                                        "text-xs text-green-700 font-semibold"
+                                        " not-italic"
+                                    )
+                                    ui.label(raw_str).classes(
+                                        "text-green-800 break-all"
+                                    )
+                                _inline_parse_btn(f"收到广播 [{rf_dtype}]", rb)
                 for nr in no_recv:
                     nr_dtype, _ = dev_info.get(nr["device"], ("—", ""))
                     nr_udid     = nr.get("udid", "")
                     dev_display = f"[{nr_dtype}] UDID:{nr_udid}"
+                    missing     = nr.get("missing_bcasts", [])
+                    prefix      = (
+                        f"未收到{missing[0]}" if len(missing) == 1
+                        else "未收到设备广播"
+                    )
                     with ui.row().classes(
                         "items-start gap-2 bg-yellow-50 rounded px-1"
                     ):
                         ui.label("✗").classes("text-yellow-600 w-10 shrink-0")
-                        ui.label(f"未收到 {dev_display}").classes(
+                        ui.label(f"{prefix} {dev_display}").classes(
                             "text-yellow-700 italic"
                         )
                 if not l1_raw and not l2_raw and not recv_from and not no_recv:

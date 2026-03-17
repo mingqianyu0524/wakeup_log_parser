@@ -71,9 +71,14 @@ _RE_ANDROID_RECV = re.compile(
     r"parseResponse.*?version\s+\d+::\[([-\d,\s]+)\]"
 )
 
-# HarmonyOS sends: optional "[hash]buildBytes: {...}"
+# HarmonyOS sends pre-wakeup (T1a): optional "[hash]buildBytes: {...}"
 _RE_HMOS_SEND = re.compile(
     r"buildBytes:\s*(\{[^}]+\})"
+)
+
+# HarmonyOS sends wakeup (T2a): "sendMsgs = 0,240,..."
+_RE_HMOS_SEND2 = re.compile(
+    r"\bsendMsgs\s*=\s*([\d,\s]+)"
 )
 
 # HarmonyOS receives: "deviceData:DeviceData{...mOriginData=0,240,...}"
@@ -288,6 +293,19 @@ def _scan_file(
                 if m:
                     ts = extract_timestamp(line)
                     b  = parse_json_bytes(m.group(1))
+                    if ts and b:
+                        sent_bcast.append({
+                            "ts":      ts,
+                            "ts_ms":   ts_to_ms(ts),
+                            "decoded": decode_broadcast(b),
+                        })
+                    continue
+
+                # HarmonyOS T2a wakeup broadcast: "sendMsgs = 0,240,..."
+                m = _RE_HMOS_SEND2.search(line)
+                if m:
+                    ts = extract_timestamp(line)
+                    b  = parse_csv_uint8(m.group(1))
                     if ts and b:
                         sent_bcast.append({
                             "ts":      ts,
@@ -583,16 +601,14 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
             if raw:
                 recv_index.setdefault(raw, []).append(nid)
 
-    # Union sender with all receivers of the same raw payload
+    # Union sender with all receivers of any matching raw payload (both T1a and T2a)
     for nid, (dev, _, ev) in enumerate(flat):
         l2 = ev.get("L2BroadcastData") or {}
         l1 = ev.get("L1BroadcastData") or {}
-        sent_raw = l2.get("raw") or l1.get("raw") or ""
-        if not sent_raw:
-            continue
-        for recv_nid in recv_index.get(sent_raw, []):
-            if flat[recv_nid][0] != dev:
-                uf.union(nid, recv_nid)
+        for sent_raw in filter(None, [l2.get("raw"), l1.get("raw")]):
+            for recv_nid in recv_index.get(sent_raw, []):
+                if flat[recv_nid][0] != dev:
+                    uf.union(nid, recv_nid)
 
     # ── Phase 2: time-offset fallback matching ────────────────────────────────
     # Collect per-pair deltas from Phase 1 matches only
@@ -720,21 +736,37 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
                 ev_j  = flat[nj][2]
                 ams_j = anchor_ms[nj]
 
-                # Did dev_i directly receive dev_j's sent broadcast?
-                l2j      = ev_j.get("L2BroadcastData") or {}
-                l1j      = ev_j.get("L1BroadcastData") or {}
-                sent_raw = l2j.get("raw") or l1j.get("raw") or ""
-                rb_match = None
-                if sent_raw:
-                    for rb in ev_i.get("ReceivedBroadcasts", []):
-                        if rb.get("Broadcast") == sent_raw:
-                            rb_match = rb
-                            break
+                # Did dev_i directly receive any of dev_j's sent broadcasts?
+                l2j = ev_j.get("L2BroadcastData") or {}
+                l1j = ev_j.get("L1BroadcastData") or {}
+                # Build list of (label, raw) for each broadcast j sent
+                sent_bcasts_j: list[tuple[str, str]] = []
+                if l2j.get("raw"):
+                    sent_bcasts_j.append(("T2a", l2j["raw"]))
+                if l1j.get("raw"):
+                    sent_bcasts_j.append(("T1a", l1j["raw"]))
 
-                if rb_match is not None:
-                    # Green link: broadcast received directly
+                recv_raws_i = {
+                    rb.get("Broadcast")
+                    for rb in ev_i.get("ReceivedBroadcasts", [])
+                    if rb.get("Broadcast")
+                }
+                matched_labels = [lbl for lbl, raw in sent_bcasts_j if raw in recv_raws_i]
+                missing_labels = [lbl for lbl, raw in sent_bcasts_j if raw not in recv_raws_i]
+
+                if matched_labels:
+                    # Green link: at least one broadcast received directly
                     link_confs.append("green")
-                    dec = rb_match.get("Decoded") or {}
+                    # UDID from the first matched received broadcast
+                    matched_raw = next(
+                        raw for lbl, raw in sent_bcasts_j if lbl in matched_labels
+                    )
+                    rb_ref = next(
+                        (rb for rb in ev_i.get("ReceivedBroadcasts", [])
+                         if rb.get("Broadcast") == matched_raw),
+                        None,
+                    )
+                    dec = (rb_ref.get("Decoded") or {}) if rb_ref else {}
                     recv_from.append({
                         "device": dev_j,
                         "udid":   _udid_hex(dec.get("udid")),
@@ -750,8 +782,9 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
                     else:
                         link_confs.append("yellow")
                     no_recv.append({
-                        "device": dev_j,
-                        "udid":   _udid_hex(ev_j.get("DeviceUdid")),
+                        "device":         dev_j,
+                        "udid":           _udid_hex(ev_j.get("DeviceUdid")),
+                        "missing_bcasts": [lbl for lbl, _ in sent_bcasts_j],
                     })
 
             # Worst-link rule: one yellow/red link dominates
