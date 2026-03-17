@@ -220,6 +220,10 @@ def _scan_file(
                         continue
                     ts_ms = ts_to_ms(ts)
                     if pending is None:
+                        # Skip if the last completed event already has this T2
+                        # (duplicate ===start:: line in a subsequent log file)
+                        if wakeup_events and wakeup_events[-1].get("t2") == ts:
+                            continue
                         pending = {
                             "t1": None, "t1_ms": None,
                             "t2": ts,   "t2_ms": ts_ms,
