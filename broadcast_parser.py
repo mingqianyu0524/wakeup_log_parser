@@ -657,38 +657,27 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
                     if uf.find(i) == root
                 )
 
-            # Collect all candidate pairs, sort by quality, assign greedily.
-            # Using sorted pairs instead of greedy per-nx avoids wrong assignments
-            # when an earlier event "steals" the best match from another event.
-            # Also accept raw_diff <= 2000ms regardless of off-adjusted diff,
-            # so that a large/wrong off value never rejects a clearly nearby pair.
-            candidates: list[tuple[float, float, int, int]] = []
             for nx in x_nodes:
                 if _comp_has_dev(nx, dev_y):
                     continue  # already joined to dev_y
                 ams_x = anchor_ms[nx]
                 if ams_x is None:
                     continue
+
+                best_ny, best_diff = None, float("inf")
                 for ny in y_nodes:
                     if _comp_has_dev(ny, dev_x):
                         continue
                     ams_y = anchor_ms[ny]
                     if ams_y is None:
                         continue
-                    raw_diff = abs(ams_x - ams_y)
-                    adj_diff = abs((ams_x - ams_y) - off)
-                    if adj_diff <= outer or raw_diff <= 2000:
-                        candidates.append((adj_diff, raw_diff, nx, ny))
+                    diff = abs((ams_x - ams_y) - off)
+                    if diff <= outer and diff < best_diff:
+                        best_diff = diff
+                        best_ny = ny
 
-            candidates.sort(key=lambda c: (c[0], c[1]))
-            used_nx: set[int] = set()
-            used_ny: set[int] = set()
-            for adj_diff, raw_diff, nx, ny in candidates:
-                if nx in used_nx or ny in used_ny:
-                    continue
-                uf.union(nx, ny)
-                used_nx.add(nx)
-                used_ny.add(ny)
+                if best_ny is not None:
+                    uf.union(nx, best_ny)
 
     # ── Phase 3: build sessions with per-device confidence ────────────────────
     components: dict[int, list[int]] = {}
