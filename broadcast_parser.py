@@ -70,6 +70,10 @@ _RE_ANDROID_SEND = re.compile(
 _RE_ANDROID_RECV = re.compile(
     r"parseResponse.*?version\s+\d+::\[([-\d,\s]+)\]"
 )
+# Android receives (alternate): "onAwareResult data:[0, 50, ...]"
+_RE_ANDROID_RECV2 = re.compile(
+    r"onAwareResult\s+data:\[([-\d,\s]+)\]"
+)
 
 # HarmonyOS sends pre-wakeup (T1a): optional "[hash]buildBytes: {...}"
 _RE_HMOS_SEND = re.compile(
@@ -280,7 +284,7 @@ def _scan_file(
                     continue
 
                 # Android receives
-                m = _RE_ANDROID_RECV.search(line)
+                m = _RE_ANDROID_RECV.search(line) or _RE_ANDROID_RECV2.search(line)
                 if m:
                     ts = extract_timestamp(line)
                     b  = parse_bracketed_int8(m.group(1))
