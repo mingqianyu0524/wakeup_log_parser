@@ -126,7 +126,7 @@ def parse_json_bytes(s: str) -> list[int] | None:
 
 # ── broadcast payload decoder ─────────────────────────────────────────────────
 
-_DEVICE_TYPE_NAMES = {50: "手机", 110: "手表", 240: "车机"}
+_DEVICE_TYPE_NAMES = {40: "平板", 50: "手机", 110: "手表", 240: "车机"}
 _BROADCAST_TYPE_NAMES = {0: "唤醒广播", 1: "预唤醒广播", 2: "唤醒失败广播"}
 
 

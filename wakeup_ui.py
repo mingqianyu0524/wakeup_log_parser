@@ -698,15 +698,19 @@ def index():
                 ui.notify("请先添加设备日志路径", type="warning")
                 return
 
-            # Build (device_name, hilog_dir) pairs
+            # Build (device_name, hilog_dir) pairs.
+            # Walk up past generic intermediate directories so that paths like
+            # ".../RemoteLog_commercial_DEV-A/.../remoteLog/hilog" and
+            # ".../RemoteLog_commercial_DEV-B/.../remoteLog/hilog" don't both
+            # resolve to the same "remoteLog" key and overwrite each other.
+            _GENERIC_DIR_NAMES = {"hilog", "remoteLog", "log", "logs"}
             path_pairs: list[tuple[str, Path]] = []
             for p in paths:
-                hilog_dir   = Path(p)
-                device_name = (
-                    hilog_dir.parent.name
-                    if hilog_dir.name == "hilog"
-                    else hilog_dir.name
-                )
+                hilog_dir = Path(p)
+                node = hilog_dir
+                while node.name in _GENERIC_DIR_NAMES and node.parent != node:
+                    node = node.parent
+                device_name = node.name or hilog_dir.name
                 path_pairs.append((device_name, hilog_dir))
 
             # Pre-count log files per device (fast, synchronous)
