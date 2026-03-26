@@ -151,10 +151,11 @@ def calc_latencies(watch_sessions: list[dict], phone_sessions: list[dict]) -> li
             'getConnectedDevices':        ms_diff(ws.get('a'), ws.get('b')),   # b - a
             'registerMessageReceiver':    ms_diff(ws.get('b'), ws.get('c')),   # c - b
             'receiveMessage':             ms_diff(ws.get('c'), ws.get('d')),   # d - c
-            'total':                      ms_diff(ws.get('d'), ws.get('e')),   # e - d
             'isCarNearby':                ms_diff(ps.get('f'), ps.get('g')),   # g - f
             'getConnectedDevicesPhone':   ms_diff(ps.get('g'), ps.get('h')),   # h - g
             'sendMessage':                ms_diff(ps.get('h'), ps.get('i')),   # i - h
+            'watchTotal':                 ms_diff(ws.get('a'), ws.get('e')),   # e - a
+            'phoneTotal':                 ms_diff(ps.get('f'), ps.get('i')),   # i - f
         })
     return rows
 
@@ -174,29 +175,35 @@ def write_excel(rows: list[dict], output_path: Path):
     ws = wb.active
     ws.title = 'WearEngine时延分析'
 
-    # ── 第 1 行：手表 / 手机 大标题 ──────────────────────────────────────
-    ws.merge_cells('B1:E1')
-    ws['B1'] = '手表'
-    _cell_style(ws['B1'], bold=True, bg='D6E4F0')
-
-    ws.merge_cells('F1:H1')
-    ws['F1'] = '手机'
-    _cell_style(ws['F1'], bold=True, bg='E2F0D9')
-
-    # A1 序号列标题占位
+    # ── 第 1 行：手表 / 手机 / 总计 大标题 ───────────────────────────────
+    #   A      B      C      D      E      F      G      H      I
+    #  序号  [──── 手表 ────]      [──── 手机 ────]      [── 总计 ──]
     ws['A1'] = ''
     _cell_style(ws['A1'], bg='F2F2F2')
 
+    ws.merge_cells('B1:D1')
+    ws['B1'] = '手表'
+    _cell_style(ws['B1'], bold=True, bg='D6E4F0')
+
+    ws.merge_cells('E1:G1')
+    ws['E1'] = '手机'
+    _cell_style(ws['E1'], bold=True, bg='E2F0D9')
+
+    ws.merge_cells('H1:I1')
+    ws['H1'] = '总计'
+    _cell_style(ws['H1'], bold=True, bg='FFF2CC')
+
     # ── 第 2 行：指标列标题 ──────────────────────────────────────────────
     col_defs = [
-        ('序号',                  'F2F2F2'),
-        ('getConnectedDevices\n(b-a)',   'D6E4F0'),
-        ('registerMessageReceiver\n(c-b)', 'D6E4F0'),
-        ('receiveMessage\n(d-c)',         'D6E4F0'),
-        ('total\n(e-d)',                  'D6E4F0'),
-        ('isCarNearby\n(g-f)',            'E2F0D9'),
-        ('getConnectedDevices\n(h-g)',    'E2F0D9'),
-        ('sendMessage\n(i-h)',            'E2F0D9'),
+        ('序号',                            'F2F2F2'),
+        ('getConnectedDevices\n(b-a)',       'D6E4F0'),
+        ('registerMessageReceiver\n(c-b)',   'D6E4F0'),
+        ('receiveMessage\n(d-c)',            'D6E4F0'),
+        ('isCarNearby\n(g-f)',               'E2F0D9'),
+        ('getConnectedDevices\n(h-g)',       'E2F0D9'),
+        ('sendMessage\n(i-h)',               'E2F0D9'),
+        ('手表总计\n(e-a)',                  'FFF2CC'),
+        ('手机总计\n(i-f)',                  'FFF2CC'),
     ]
     for col_idx, (label, bg) in enumerate(col_defs, 1):
         cell = ws.cell(row=2, column=col_idx, value=label)
@@ -210,10 +217,11 @@ def write_excel(rows: list[dict], output_path: Path):
         'getConnectedDevices',
         'registerMessageReceiver',
         'receiveMessage',
-        'total',
         'isCarNearby',
         'getConnectedDevicesPhone',
         'sendMessage',
+        'watchTotal',
+        'phoneTotal',
     ]
     for row_idx, row_data in enumerate(rows, 3):
         ws.cell(row=row_idx, column=1, value=row_idx - 2).alignment = \
@@ -225,13 +233,40 @@ def write_excel(rows: list[dict], output_path: Path):
         ws.row_dimensions[row_idx].height = 18
 
     # ── 列宽 ─────────────────────────────────────────────────────────────
-    col_widths = [6, 24, 26, 18, 12, 16, 24, 16]
+    col_widths = [6, 24, 26, 18, 16, 24, 16, 14, 14]
     for i, w in enumerate(col_widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    # ── 单位备注 ─────────────────────────────────────────────────────────
+    # ── 备注与事件说明 ────────────────────────────────────────────────────
     note_row = len(rows) + 4
-    ws.cell(row=note_row, column=1, value='* 数值单位：毫秒（ms）')
+    note_style = {'bold': False, 'align': 'left'}
+
+    def note(row, col, text, bold=False):
+        cell = ws.cell(row=row, column=col, value=text)
+        cell.font = Font(bold=bold, name='微软雅黑', size=9)
+        cell.alignment = Alignment(horizontal='left', vertical='center')
+
+    note(note_row,     1, '* 数值单位：毫秒（ms）', bold=True)
+    note(note_row + 2, 1, '事件说明：', bold=True)
+
+    descriptions = [
+        ('a', '[before] getConnectedDevices',       '手表：开始获取已连接设备列表'),
+        ('b', '[after] getConnectedDevices',        '手表：完成获取已连接设备列表'),
+        ('c', '[after] registerMessageReceiver',    '手表：完成注册消息接收器'),
+        ('d', 'Succeeded in receiving message',     '手表：成功接收到来自手机的消息'),
+        ('e', 'Interaction elapsed',                '手表：整体交互完成'),
+        ('f', 'Ability onRequest HiWearAbility',    '手机：HiWear 服务收到唤醒请求'),
+        ('g', 'isCarNearby =',                      '手机：完成车辆距离判断'),
+        ('h', 'device =',                           '手机：获取到目标设备信息'),
+        ('i', 'send message: code =',               '手机：向手表发送消息'),
+    ]
+    for offset, (key, pattern, meaning) in enumerate(descriptions):
+        r = note_row + 3 + offset
+        note(r, 1, key, bold=True)
+        note(r, 2, pattern)
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=9)
+        note(r, 3, meaning)
+        ws.row_dimensions[r].height = 16
 
     wb.save(output_path)
     print(f"\n✓ 结果已保存：{output_path}")
@@ -283,10 +318,11 @@ def main():
         ('getConnectedDevices（手表）',  'getConnectedDevices'),
         ('registerMessageReceiver',      'registerMessageReceiver'),
         ('receiveMessage',               'receiveMessage'),
-        ('total',                        'total'),
         ('isCarNearby',                  'isCarNearby'),
         ('getConnectedDevices（手机）',  'getConnectedDevicesPhone'),
         ('sendMessage',                  'sendMessage'),
+        ('手表总计（e-a）',              'watchTotal'),
+        ('手机总计（i-f）',              'phoneTotal'),
     ]
     for label, key in stat_labels:
         vals = [r[key] for r in rows if r.get(key) != '']
