@@ -5,6 +5,8 @@ WearEngine 协同链路时延分析脚本
 解析手表和手机的 HiLog 日志，计算各阶段时延并输出到 Excel。
 """
 
+from __future__ import annotations
+
 import re
 import os
 import sys
