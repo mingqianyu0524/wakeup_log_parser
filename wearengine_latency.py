@@ -153,10 +153,10 @@ def calc_latencies(watch_sessions: list[dict], phone_sessions: list[dict]) -> li
         phone_t = ms_diff(p.get('f'), p.get('j'))          # j - f
         p2w     = ms_diff(p.get('j'), p.get('k'))          # k - j  (phone->watch传输)
 
-        # w2p = (l-e) - (k-f)；手表总计 = e - a
+        # p2w = (k-j)/2；w2p = (l-e)-(j-f)-p2w；手表总计 = e-a
         le      = ms_diff(w.get('e'), w.get('l'))          # l - e
-        kf      = ms_diff(p.get('f'), p.get('k'))          # k - f
-        w2p        = (le - kf)               if (le != '' and kf != '') else ''
+        p2w     = (ms_diff(p.get('j'), p.get('k')) / 2)    if (p.get('j') and p.get('k')) else ''
+        w2p     = (le - phone_t - p2w)                     if (le != '' and phone_t != '' and p2w != '') else ''
         watch_only = ms_diff(w.get('a'), w.get('e'))       # e - a
 
         rows.append({
@@ -226,8 +226,8 @@ def write_excel(rows: list[dict], output_path: Path):
         ('sendMessage\n(k-j)',                'E2F0D9'),   # J
         ('手表总计\n(e-a)',                    'FFF2CC'),   # K
         ('手机总计\n(j-f)',                   'FFF2CC'),   # L
-        ('w2p传输时延\n(l-e)-(k-f)',          'FFF2CC'),   # M
-        ('p2w传输时延\n(k-j)',               'FFF2CC'),   # N
+        ('w2p传输时延\n(l-e)-(j-f)-p2w',       'FFF2CC'),   # M
+        ('p2w传输时延\n(k-j)/2',             'FFF2CC'),   # N
         ('total\n(l-a)',                      'FFF2CC'),   # O
     ]
     for col_idx, (label, bg) in enumerate(col_defs, 1):
@@ -266,8 +266,8 @@ def write_excel(rows: list[dict], output_path: Path):
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
     note(note_row,     1, '* 数值单位：毫秒（ms）', bold=True)
-    note(note_row + 1, 1, '* w2p（watch→phone传输时延）= (l-e) - (k-f)　　'
-                          'p2w（phone→watch传输时延）= k - j', bold=False)
+    note(note_row + 1, 1, '* p2w（phone→watch传输时延）= (k-j)/2　　'
+                          'w2p（watch→phone传输时延）= (l-e) - (j-f) - p2w', bold=False)
     note(note_row + 2, 1, '* 手表总计 = e - a（手表发送数据前的处理时延）', bold=False)
 
     note(note_row + 4, 1, '事件说明：', bold=True)
@@ -353,7 +353,7 @@ def main():
         ('sendMessage',                   'sendMsg'),
         ('手表总计（e-a）',               'watch_only'),
         ('手机总计（j-f）',               'phone_total'),
-        ('w2p传输时延（(l-e)-(k-f)）',   'w2p'),
+        ('w2p传输时延（(l-e)-(j-f)-p2w）', 'w2p'),
         ('p2w传输时延',                   'p2w'),
         ('total（l-a）',                  'total'),
     ]
