@@ -153,9 +153,11 @@ def calc_latencies(watch_sessions: list[dict], phone_sessions: list[dict]) -> li
         phone_t = ms_diff(p.get('f'), p.get('j'))          # j - f
         p2w     = ms_diff(p.get('j'), p.get('k'))          # k - j  (phone->watch传输)
 
-        # w2p = total - phone_total；watch总计 = total - w2p - p2w
-        w2p        = (total - phone_t)               if (total != '' and phone_t != '') else ''
-        watch_only = (total - w2p - p2w)             if (total != '' and w2p != '' and p2w != '') else ''
+        # w2p = (l-e) - (k-f)；手表总计 = e - a
+        le      = ms_diff(w.get('e'), w.get('l'))          # l - e
+        kf      = ms_diff(p.get('f'), p.get('k'))          # k - f
+        w2p        = (le - kf)               if (le != '' and kf != '') else ''
+        watch_only = ms_diff(w.get('a'), w.get('e'))       # e - a
 
         rows.append({
             'gcd_watch':   ms_diff(w.get('a'), w.get('b')),  # b - a
@@ -167,9 +169,9 @@ def calc_latencies(watch_sessions: list[dict], phone_sessions: list[dict]) -> li
             'isCarNearby': ms_diff(p.get('h'), p.get('i')),  # i - h
             'gcd_phone':   ms_diff(p.get('i'), p.get('j')),  # j - i
             'sendMsg':     ms_diff(p.get('j'), p.get('k')),  # k - j
-            'watch_only':  watch_only,                        # l-a-w2p-p2w
+            'watch_only':  watch_only,                        # e - a
             'phone_total': phone_t,                           # j - f
-            'w2p':         w2p,                               # (l-a)-(j-f)
+            'w2p':         w2p,                               # (l-e)-(k-f)
             'p2w':         p2w,                               # k - j
             'total':       total,                             # l - a
         })
@@ -222,9 +224,9 @@ def write_excel(rows: list[dict], output_path: Path):
         ('isCarNearby\n(i-h)',                'E2F0D9'),   # H
         ('getConnectedDevices\n(j-i)',        'E2F0D9'),   # I
         ('sendMessage\n(k-j)',                'E2F0D9'),   # J
-        ('手表总计\n(l-a-w2p-p2w)',           'FFF2CC'),   # K
+        ('手表总计\n(e-a)',                    'FFF2CC'),   # K
         ('手机总计\n(j-f)',                   'FFF2CC'),   # L
-        ('w2p传输时延\n(l-a)-(j-f)',          'FFF2CC'),   # M
+        ('w2p传输时延\n(l-e)-(k-f)',          'FFF2CC'),   # M
         ('p2w传输时延\n(k-j)',               'FFF2CC'),   # N
         ('total\n(l-a)',                      'FFF2CC'),   # O
     ]
@@ -264,9 +266,9 @@ def write_excel(rows: list[dict], output_path: Path):
         cell.alignment = Alignment(horizontal='left', vertical='center')
 
     note(note_row,     1, '* 数值单位：毫秒（ms）', bold=True)
-    note(note_row + 1, 1, '* w2p（watch→phone传输时延）= (l-a) - (j-f)　　'
+    note(note_row + 1, 1, '* w2p（watch→phone传输时延）= (l-e) - (k-f)　　'
                           'p2w（phone→watch传输时延）= k - j', bold=False)
-    note(note_row + 2, 1, '* 手表总计 = total - w2p - p2w（手表纯处理时延，不含传输和手机处理）', bold=False)
+    note(note_row + 2, 1, '* 手表总计 = e - a（手表发送数据前的处理时延）', bold=False)
 
     note(note_row + 4, 1, '事件说明：', bold=True)
 
@@ -349,9 +351,9 @@ def main():
         ('isCarNearby',                   'isCarNearby'),
         ('getConnectedDevices（手机）',   'gcd_phone'),
         ('sendMessage',                   'sendMsg'),
-        ('手表总计',                      'watch_only'),
+        ('手表总计（e-a）',               'watch_only'),
         ('手机总计（j-f）',               'phone_total'),
-        ('w2p传输时延',                   'w2p'),
+        ('w2p传输时延（(l-e)-(k-f)）',   'w2p'),
         ('p2w传输时延',                   'p2w'),
         ('total（l-a）',                  'total'),
     ]
