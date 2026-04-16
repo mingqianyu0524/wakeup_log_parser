@@ -59,6 +59,7 @@ def _render_broadcast_detail(bc: dict) -> None:
     conf    = d.get("voiceConfidence", "—")
     supp    = d.get("suppressed", "—")
     supp_s  = ("抑制" if supp == 63 else "不抑制") if isinstance(supp, int) else "—"
+    recv_t  = bc.get("ReceiveTime")
 
     with ui.column().classes("gap-0 text-xs font-mono"):
         ui.label(f"广播类型: {btype}")
@@ -66,6 +67,8 @@ def _render_broadcast_detail(bc: dict) -> None:
         ui.label(
             f"时间戳字节: {ts_b}  →  unix={ts_u}  →  {ts}"
         )
+        if recv_t:
+            ui.label(f"收到时间: {recv_t}").classes("text-blue-700")
         ui.label(f"设备UDID: {udid}")
         ui.label(f"声强: {energy}   声纹置信度: {conf}   抑制: {supp_s}({supp})")
         ui.label(f"原始数据: {bc.get('Broadcast','—')}").classes("text-gray-500")
@@ -395,23 +398,24 @@ def _render_aligned_device_row(
             l2bd   = ev.get("L2BroadcastData")
             l2_raw = l2bd.get("raw", "") if l2bd else ""
 
+            def _sent_row(arrow_lbl: str, raw: str, bd: dict, expand_lbl: str) -> None:
+                supp        = (bd.get("suppressed") == 63) if bd else False
+                arrow_cls   = "text-orange-500" if supp else "text-blue-500"
+                body_cls    = "text-orange-800" if supp else "text-gray-700"
+                with ui.row().classes("items-start gap-2 flex-wrap"):
+                    ui.label(arrow_lbl).classes(f"{arrow_cls} w-10 shrink-0")
+                    ui.label(raw).classes(f"{body_cls} break-all flex-1")
+                    if supp:
+                        ui.label("抑制").classes(
+                            "text-xs bg-orange-100 text-orange-700 px-1 rounded"
+                        )
+                    _inline_parse_btn(expand_lbl, {"Decoded": bd, "Broadcast": raw})
+
             with ui.column().classes("gap-1 pl-1 font-mono text-xs"):
                 if l1_raw:
-                    with ui.row().classes("items-start gap-2 flex-wrap"):
-                        ui.label("↑T1a").classes("text-blue-500 w-10 shrink-0")
-                        ui.label(l1_raw).classes("text-gray-700 break-all flex-1")
-                        _inline_parse_btn(
-                            "预唤醒广播 T1a",
-                            {"Decoded": l1bd, "Broadcast": l1_raw},
-                        )
+                    _sent_row("↑T1a", l1_raw, l1bd, "预唤醒广播 T1a")
                 if l2_raw:
-                    with ui.row().classes("items-start gap-2 flex-wrap"):
-                        ui.label("↑T2a").classes("text-blue-500 w-10 shrink-0")
-                        ui.label(l2_raw).classes("text-gray-700 break-all flex-1")
-                        _inline_parse_btn(
-                            "唤醒广播 T2a",
-                            {"Decoded": l2bd, "Broadcast": l2_raw},
-                        )
+                    _sent_row("↑T2a", l2_raw, l2bd, "唤醒广播 T2a")
 
                 # Iterate ALL received broadcasts (not just session-peer matches)
                 # so wakeup-failure broadcasts and traffic from unlabelled peers
@@ -432,6 +436,8 @@ def _render_aligned_device_row(
                     rb_dtype_dec = dec.get("deviceTypeName", "—")
                     raw_str      = rb.get("Broadcast", "—")
                     rb_type      = dec.get("type")
+                    rb_supp      = (dec.get("suppressed") == 63)
+                    rb_recv_t    = rb.get("ReceiveTime", "")
 
                     peer_dev = peer_by_udid.get(rb_udid)
                     if peer_dev:
@@ -440,11 +446,19 @@ def _render_aligned_device_row(
                     else:
                         dev_display   = f"[{rb_dtype_dec}] UDID:{rb_udid}"
 
-                    # Type-2 失败广播用红底，其他用绿底
+                    # Coloring priority:
+                    #   type-2 失败广播  → 红底
+                    #   suppressed (byte[12]==63) → 橙底
+                    #   其他              → 绿底
                     if rb_type == 2:
                         bg_cls, head_cls, body_cls, arrow_cls = (
                             "bg-red-50", "text-red-700",
                             "text-red-800", "text-red-600",
+                        )
+                    elif rb_supp:
+                        bg_cls, head_cls, body_cls, arrow_cls = (
+                            "bg-orange-50", "text-orange-700",
+                            "text-orange-800", "text-orange-600",
                         )
                     else:
                         bg_cls, head_cls, body_cls, arrow_cls = (
@@ -452,14 +466,22 @@ def _render_aligned_device_row(
                             "text-green-800", "text-green-600",
                         )
 
+                    head_text = f"{dev_display}  ·  {rb_tname}"
+                    if rb_supp:
+                        head_text += "  ·  抑制"
+
                     with ui.row().classes(
                         f"items-start gap-2 {bg_cls} rounded px-1 flex-wrap"
                     ):
                         ui.label("↓收").classes(f"{arrow_cls} w-10 shrink-0")
                         with ui.column().classes("gap-0 flex-1"):
-                            ui.label(f"{dev_display}  ·  {rb_tname}").classes(
+                            ui.label(head_text).classes(
                                 f"text-xs {head_cls} font-semibold not-italic"
                             )
+                            if rb_recv_t:
+                                ui.label(f"⏱ 收到 {rb_recv_t}").classes(
+                                    f"text-xs {head_cls} opacity-70"
+                                )
                             ui.label(raw_str).classes(f"{body_cls} break-all")
                         _inline_parse_btn(f"收到广播 [{rb_dtype_dec}]", rb)
 

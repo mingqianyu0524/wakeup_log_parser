@@ -300,11 +300,13 @@ session 展开后：
 设备行展开内容（三段）：
 - **时间栏**：T1/T1a/T2/T2a/T3，仅显示时间字符串
 - **广播栏**：
-  - `↑T1a` / `↑T2a`：本机发送广播 raw bytes（蓝色）
+  - `↑T1a` / `↑T2a`：本机发送广播 raw bytes（蓝色；若 byte[12]==63 抑制广播则改为橙色 + 末尾追加 `抑制` 徽章），由 `_sent_row()` 渲染
   - `↓收`：**遍历 `ReceivedBroadcasts` 整表**（不再只显示与 session peer UDID 匹配的条目）
-    - type 0/1（唤醒/预唤醒）绿底
-    - type 2（唤醒失败）红底
-    - 每条显示 `[deviceType] UDID:xx · {typeName}` + raw bytes + 解析按钮
+    - type 2（唤醒失败）红底；优先级最高
+    - byte[12]==63 抑制广播 橙底，head 追加 `· 抑制`
+    - 其他 type 0/1 绿底
+    - head 行 `[deviceType] UDID:xx · {typeName}[ · 抑制]`，下方一行 `⏱ 收到 MM-DD HH:MM:SS.mmm`，再下方 raw bytes，右侧解析按钮
+    - 收到时间取自 hilog 日志行时间戳（≈ BLE 监听到广播时刻），存于 `O1.ReceivedBroadcasts[].ReceiveTime`
     - 会话里已识别的对端用 `dev_info` 标注设备类型，未识别的直接用解码出的 `deviceTypeName`
   - `✗`：会话对端（`no_recv`）发了但本机完全未收到的广播（黄底）；若该对端的 UDID 已经出现在 `↓收` 列表里（比如收到了 T2a 但没收到 T1a），跳过以避免自相矛盾
 - **解析广播**按钮（懒加载，点击后展开 `_render_broadcast_detail`）
