@@ -34,7 +34,7 @@
 公开 API：
 - `parse_device_logs(device_hilog_dir: Path, progress_cb=None) -> list[dict]` — 返回 O1 列表；`progress_cb(current, total, filename)` 在每个文件开始前调用
 - `align_sessions(all_results: dict[str, list[dict]]) -> list[dict]` — 返回 AlignedSession 列表
-- `_DEVICE_TYPE_NAMES: dict[int, str]` — `{50:"手机", 110:"手表", 240:"车机"}`
+- `_DEVICE_TYPE_NAMES: dict[int, str]` — `{40:"平板", 50:"手机", 110:"手表", 240:"车机"}`
 - `is_log_file(path: Path) -> bool` — 判断文件是否为日志文件（`hiapplogcat-log*` 或 `hilog*.txt`）
 
 ### `wakeup_ui.py`
@@ -87,6 +87,17 @@ for hilog_dir, path_str in device_paths:
 progress_timer.cancel()
 ```
 
+**device_name 推导（`on_parse()` 内）：**
+
+从用户输入路径向上遍历，跳过通用中间目录名 `{"hilog", "remoteLog", "log", "logs"}`，取第一个有意义的目录名作为设备键。例：
+
+```
+.../RemoteLog_commercial_DEV-A/.../remoteLog/hilog  →  "RemoteLog_commercial_DEV-A"
+.../phone/hilog                                     →  "phone"
+```
+
+防止多台设备日志路径都以 `remoteLog/hilog` 结尾时产生键碰撞（第二台覆盖第一台）。
+
 **对齐视图过滤器（`_render_aligned_sessions()` 内）：**
 - `t_start` / `t_end`：`ui.input`，格式 `MM-DD HH:MM`（精确到分钟）
 - `cb_normal` / `cb_double` / `cb_wrong`：`ui.checkbox`
@@ -133,8 +144,8 @@ progress_timer.cancel()
 
 ```python
 {
-    "deviceType":         int | None,   # 50=手机 110=手表 240=车机
-    "deviceTypeName":     str | None,   # "手机"/"手表"/"车机"
+    "deviceType":         int | None,   # 40=平板 50=手机 110=手表 240=车机
+    "deviceTypeName":     str | None,   # "平板"/"手机"/"手表"/"车机"
     "DeviceUdid":         list[int] | None,  # 4字节 UDID
     "L1WakeupTime":       str | None,   # "MM-DD HH:MM:SS.mmm" T1
     "L1BroadcastTime":    str | None,   # T1a
@@ -154,8 +165,8 @@ progress_timer.cancel()
 {
     "type":             int,   # 0/1/2
     "typeName":         str,   # "唤醒广播"/"预唤醒广播"/"唤醒失败广播"
-    "deviceType":       int,   # 50/110/240
-    "deviceTypeName":   str,   # "手机"/"手表"/"车机"
+    "deviceType":       int,   # 40/50/110/240
+    "deviceTypeName":   str,   # "平板"/"手机"/"手表"/"车机"
     "timestamp_bytes":  list,  # b[2:6] 原始字节
     "timestamp_unix":   int,   # big-endian uint32 Unix 秒
     "timestamp_human":  str,   # "2026年03月11日17时28分30秒"
@@ -178,7 +189,8 @@ progress_timer.cancel()
             "event":             dict,  # O1 对象
             "confidence":        str,   # "green"/"yellow"/"red"/"isolated"
             "received_from":     list,  # [{"device": str, "udid": str}]
-            "not_received_from": list,  # [{"device": str, "udid": str}]
+            "not_received_from": list,  # [{"device": str, "udid": str, "missing_bcasts": list[str]}]
+            # missing_bcasts: ["T1a"] / ["T2a"] / ["T1a","T2a"] — 对方发了但本机未收到的广播
         }
     }
     # 缺席设备：entries 中没有该 key
@@ -192,7 +204,7 @@ progress_timer.cancel()
 | 索引  | 含义                                          |
 |-------|-----------------------------------------------|
 | [0]   | 广播类型：0=唤醒 1=预唤醒 2=唤醒失败          |
-| [1]   | 设备类型：50=手机 110=手表 240=车机           |
+| [1]   | 设备类型：40=平板 50=手机 110=手表 240=车机   |
 | [2-5] | Unix 时间戳，big-endian uint32，秒            |
 | [6-9] | 设备 UDID                                     |
 | [10]  | 声强（预唤醒广播为 0）                         |
@@ -212,11 +224,22 @@ _RE_T2        = re.compile(r"===start::")
 _RE_T3        = re.compile(r"onResult::\s*isShouldResponse")
 _RE_DECISION  = re.compile(r"isShouldResponse\s*=\s*(true|false)", re.IGNORECASE)
 
-_RE_ANDROID_SEND = re.compile(r"getEncryptData::.*?dec data = \[([-\d,\s]+)\]")
-_RE_ANDROID_RECV = re.compile(r"parseResponse.*?version\s+\d+::\[([-\d,\s]+)\]")
-_RE_HMOS_SEND    = re.compile(r"buildBytes:\s*(\{[^}]+\})")
-_RE_HMOS_RECV    = re.compile(r"mOriginData=([\d,]+)")
+# Android 发送：getEncryptData:: ... dec data = [-24, 81, ...]
+_RE_ANDROID_SEND  = re.compile(r"getEncryptData::.*?dec data = \[([-\d,\s]+)\]")
+# Android 接收（主）：parseResponse version 1::[0, 50, 105, -82, ...]
+_RE_ANDROID_RECV  = re.compile(r"parseResponse.*?version\s+\d+::\[([-\d,\s]+)\]")
+# Android 接收（备）：CommonUtil: onAwareResult data:[0, 50, 105, -71, ...]
+_RE_ANDROID_RECV2 = re.compile(r"onAwareResult\s+data:\[([-\d,\s]+)\]")
+# 鸿蒙发送 T1a（预唤醒）：buildBytes: {"0":1,"1":50,...}
+_RE_HMOS_SEND     = re.compile(r"buildBytes:\s*(\{[^}]+\})")
+# 鸿蒙发送 T2a（唤醒）：sendMsgs = 0,50,105,169,...
+_RE_HMOS_SEND2    = re.compile(r"\bsendMsgs\s*=\s*([\d,\s]+)")
+# 鸿蒙接收：deviceData:DeviceData{...mOriginData=0,240,...}
+_RE_HMOS_RECV     = re.compile(r"mOriginData=([\d,]+)")
 ```
+
+Android 接收两种格式均由同一 handler 处理：`_RE_ANDROID_RECV.search(line) or _RE_ANDROID_RECV2.search(line)`。  
+Android 使用 int8（有负值），经 `parse_bracketed_int8()` 转换为 uint8；鸿蒙原始即 uint8，使用 `parse_csv_uint8()`。
 
 ---
 
@@ -282,7 +305,9 @@ session 展开后：
 
 - 设备时钟不同步：时间偏移算法依赖至少 3 条 Phase 1 匹配对来计算可靠的 median/IQR；样本不足时退化为 `off=0, iqr=0`，回退窗口为 2000ms。
 - BLE 广播重复：同一内容每 ~20ms 广播一次，`ReceivedBroadcasts` 按 raw 字节去重，仅保留首次收到。
-- 跨文件事件：`_scan_file` 通过 `carry` 参数将未完成的 pending 事件传递到下一个文件。
+- 跨文件事件：`_scan_file` 通过 `carry` 参数将未完成的 pending 事件传递到下一个文件；文件序列结束后若仍有 carry，直接追加为最后一条记录。
+- T2 重复打印：同一 `===start::` 时间戳在相邻文件重复出现时自动去重（文件内：`pending["t2"] == ts` 则跳过；跨文件：`wakeup_events[-1]["t2"] == ts` 则跳过），避免产生无 T3 的残缺记录。
+- Phase 1 双广播匹配：对每个事件同时检查 L1BroadcastData（T1a）和 L2BroadcastData（T2a）的 raw 字节，任意一个在接收索引中命中即合并（`for sent_raw in filter(None, [l2.get("raw"), l1.get("raw")])`）。
 - 广播丢失（没有任何设备收到）：Phase 1 无法匹配，依赖 Phase 2 时间估算。
 
 ---
