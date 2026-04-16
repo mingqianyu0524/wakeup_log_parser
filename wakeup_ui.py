@@ -412,48 +412,66 @@ def _render_aligned_device_row(
                             "唤醒广播 T2a",
                             {"Decoded": l2bd, "Broadcast": l2_raw},
                         )
-                for rf in recv_from:
-                    rf_udid      = rf.get("udid", "")
-                    rf_dtype, _  = dev_info.get(rf["device"], ("—", ""))
-                    dev_display  = f"[{rf_dtype}] UDID:{rf_udid}"
-                    # Find ALL received broadcasts from this peer (matched by UDID)
-                    rb_list = [
-                        rb for rb in ev.get("ReceivedBroadcasts", [])
-                        if rf_udid and "".join(
-                            f"{b:02X}" for b in
-                            ((rb.get("Decoded") or {}).get("udid") or [])
-                        ) == rf_udid
-                    ]
-                    if not rb_list:
-                        # Fallback: show device row without raw bytes
-                        with ui.row().classes(
-                            "items-start gap-2 bg-green-50 rounded px-1"
-                        ):
-                            ui.label("↓收").classes("text-green-600 w-10 shrink-0")
-                            ui.label(dev_display).classes(
-                                "text-xs text-green-700 font-semibold not-italic"
-                            )
+
+                # Iterate ALL received broadcasts (not just session-peer matches)
+                # so wakeup-failure broadcasts and traffic from unlabelled peers
+                # also appear here.
+                all_recv = ev.get("ReceivedBroadcasts", [])
+                peer_by_udid: dict[str, str] = {
+                    rf.get("udid", ""): rf["device"]
+                    for rf in recv_from if rf.get("udid")
+                }
+                matched_udids = set(peer_by_udid)
+
+                for rb in all_recv:
+                    dec          = rb.get("Decoded") or {}
+                    rb_udid      = "".join(
+                        f"{b:02X}" for b in (dec.get("udid") or [])
+                    ) or "未知"
+                    rb_tname     = dec.get("typeName", "广播")
+                    rb_dtype_dec = dec.get("deviceTypeName", "—")
+                    raw_str      = rb.get("Broadcast", "—")
+                    rb_type      = dec.get("type")
+
+                    peer_dev = peer_by_udid.get(rb_udid)
+                    if peer_dev:
+                        peer_dtype, _ = dev_info.get(peer_dev, (rb_dtype_dec, rb_udid))
+                        dev_display   = f"[{peer_dtype}] UDID:{rb_udid}"
                     else:
-                        for rb in rb_list:
-                            raw_str = rb.get("Broadcast", "—")
-                            with ui.row().classes(
-                                "items-start gap-2 bg-green-50 rounded px-1 flex-wrap"
-                            ):
-                                ui.label("↓收").classes(
-                                    "text-green-600 w-10 shrink-0"
-                                )
-                                with ui.column().classes("gap-0 flex-1"):
-                                    ui.label(dev_display).classes(
-                                        "text-xs text-green-700 font-semibold"
-                                        " not-italic"
-                                    )
-                                    ui.label(raw_str).classes(
-                                        "text-green-800 break-all"
-                                    )
-                                _inline_parse_btn(f"收到广播 [{rf_dtype}]", rb)
+                        dev_display   = f"[{rb_dtype_dec}] UDID:{rb_udid}"
+
+                    # Type-2 失败广播用红底，其他用绿底
+                    if rb_type == 2:
+                        bg_cls, head_cls, body_cls, arrow_cls = (
+                            "bg-red-50", "text-red-700",
+                            "text-red-800", "text-red-600",
+                        )
+                    else:
+                        bg_cls, head_cls, body_cls, arrow_cls = (
+                            "bg-green-50", "text-green-700",
+                            "text-green-800", "text-green-600",
+                        )
+
+                    with ui.row().classes(
+                        f"items-start gap-2 {bg_cls} rounded px-1 flex-wrap"
+                    ):
+                        ui.label("↓收").classes(f"{arrow_cls} w-10 shrink-0")
+                        with ui.column().classes("gap-0 flex-1"):
+                            ui.label(f"{dev_display}  ·  {rb_tname}").classes(
+                                f"text-xs {head_cls} font-semibold not-italic"
+                            )
+                            ui.label(raw_str).classes(f"{body_cls} break-all")
+                        _inline_parse_btn(f"收到广播 [{rb_dtype_dec}]", rb)
+
+                # Session peers we expected to hear from but did NOT
+                # (only list peers whose UDID does not already appear above;
+                # otherwise a partial miss — e.g. got T2a but not T1a — would
+                # look contradictory).
                 for nr in no_recv:
                     nr_dtype, _ = dev_info.get(nr["device"], ("—", ""))
                     nr_udid     = nr.get("udid", "")
+                    if nr_udid and nr_udid in matched_udids:
+                        continue
                     dev_display = f"[{nr_dtype}] UDID:{nr_udid}"
                     missing     = nr.get("missing_bcasts", [])
                     prefix      = (
@@ -467,7 +485,8 @@ def _render_aligned_device_row(
                         ui.label(f"{prefix} {dev_display}").classes(
                             "text-yellow-700 italic"
                         )
-                if not l1_raw and not l2_raw and not recv_from and not no_recv:
+
+                if not l1_raw and not l2_raw and not all_recv and not no_recv:
                     ui.label("无广播数据").classes("text-gray-400 italic")
 
 
