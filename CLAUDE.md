@@ -300,7 +300,7 @@ session 展开后：
 设备行展开内容（三段）：
 - **时间栏**：T1/T1a/T2/T2a/T3，仅显示时间字符串
 - **广播栏**：
-  - `↑T1a` / `↑T2a`：本机发送广播 raw bytes（蓝色；若 byte[12]==63 抑制广播则改为橙色 + 末尾追加 `抑制` 徽章），由 `_sent_row()` 渲染
+  - `↑T1a` / `↑T2a`：本机发送广播，箭头统一显示 `↑发`，head 行格式与 `↓收` 相同：`[deviceType] UDID:xx · {typeName}[ · 抑制]`，下方 raw bytes；颜色规则同 `↓收`（默认绿底，抑制橙底，失败红底），由 `_sent_row()` 渲染
   - `↓收`：**遍历 `ReceivedBroadcasts` 整表**（不再只显示与 session peer UDID 匹配的条目）
     - type 2（唤醒失败）红底；优先级最高
     - byte[12]==63 抑制广播 橙底，head 追加 `· 抑制`
