@@ -6,11 +6,12 @@ Parses BLE wakeup broadcast data from Android and HarmonyOS log files,
 correlates them with wakeup events (T1/T2/T3), and produces structured
 O1 objects ready for UI consumption.
 
-Broadcast sources (4 types):
+Broadcast sources:
   Android sends    getEncryptData::...dec data = [-24, 81, ...]
   Android receives parseResponse version N::[0, 50, ...]
-  HarmonyOS sends  buildBytes: {"0":1,"1":50,...}
-  HarmonyOS recv   deviceData:DeviceData{...mOriginData=0,240,...}
+  HarmonyOS sends  buildBytes: {"0":1,"1":50,...}   (types 0/1/2)
+  HarmonyOS recv   judgeDeviceInList,deviceData:DeviceData{...mOriginData=0,240,...}  (types 0/1)
+  HarmonyOS recv   onAwareResult::deviceData:DeviceData{...mOriginData=2,...}         (type 2, wakeup-fail)
 
 Broadcast payload format (15 bytes, indices 0-based, timestamp big-endian):
   [0]    type          0=wakeup  1=pre-wakeup  2=wakeup_fail
@@ -85,9 +86,20 @@ _RE_HMOS_SEND2 = re.compile(
     r"\bsendMsgs\s*=\s*([\d,\s]+)"
 )
 
-# HarmonyOS receives: "deviceData:DeviceData{...mOriginData=0,240,...}"
+# HarmonyOS receives wakeup / pre-wakeup broadcast (types 0 / 1):
+#   "judgeDeviceInList,deviceData:DeviceData{...mOriginData=0,50,...}"
+# The "judgeDeviceInList,deviceData" keyword is required — plain "mOriginData="
+# appears on many other log lines unrelated to inbound broadcast reception.
 _RE_HMOS_RECV = re.compile(
-    r"mOriginData=([\d,]+)"
+    r"judgeDeviceInList,deviceData:DeviceData\{[^}]*mOriginData=([\d,]+)"
+)
+
+# HarmonyOS receives wakeup-failure broadcast (type 2):
+#   "onAwareResult::deviceData:DeviceData{...mOriginData=2,50,...}"
+# We also require the first byte to be literally "2," because the
+# "onAwareResult::deviceData" keyword alone matches far too many lines.
+_RE_HMOS_RECV_FAIL = re.compile(
+    r"onAwareResult::deviceData:DeviceData\{[^}]*mOriginData=(2,[\d,]+)"
 )
 
 # ── byte-array converters ─────────────────────────────────────────────────────
@@ -324,8 +336,9 @@ def _scan_file(
                         })
                     continue
 
-                # HarmonyOS receives
-                m = _RE_HMOS_RECV.search(line)
+                # HarmonyOS receives (wakeup / pre-wakeup via judgeDeviceInList,
+                # or wakeup-failure via onAwareResult::deviceData with first byte 2)
+                m = _RE_HMOS_RECV.search(line) or _RE_HMOS_RECV_FAIL.search(line)
                 if m:
                     ts = extract_timestamp(line)
                     b  = parse_csv_uint8(m.group(1))

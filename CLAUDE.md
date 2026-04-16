@@ -234,8 +234,12 @@ _RE_ANDROID_RECV2 = re.compile(r"onAwareResult\s+data:\[([-\d,\s]+)\]")
 _RE_HMOS_SEND     = re.compile(r"buildBytes:\s*(\{[^}]+\})")
 # 鸿蒙发送 T2a（唤醒）：sendMsgs = 0,50,105,169,...
 _RE_HMOS_SEND2    = re.compile(r"\bsendMsgs\s*=\s*([\d,\s]+)")
-# 鸿蒙接收：deviceData:DeviceData{...mOriginData=0,240,...}
-_RE_HMOS_RECV     = re.compile(r"mOriginData=([\d,]+)")
+# 鸿蒙接收（唤醒/预唤醒 type 0/1）：judgeDeviceInList,deviceData:DeviceData{...mOriginData=0,240,...}
+# 必须带 "judgeDeviceInList,deviceData" 关键字；裸 "mOriginData=" 会误匹配大量无关日志。
+_RE_HMOS_RECV      = re.compile(r"judgeDeviceInList,deviceData:DeviceData\{[^}]*mOriginData=([\d,]+)")
+# 鸿蒙接收（唤醒失败 type 2）：onAwareResult::deviceData:DeviceData{...mOriginData=2,...}
+# 同时要求首字节为 "2,"，因为 "onAwareResult::deviceData" 关键字匹配到的条目非常多。
+_RE_HMOS_RECV_FAIL = re.compile(r"onAwareResult::deviceData:DeviceData\{[^}]*mOriginData=(2,[\d,]+)")
 ```
 
 Android 接收两种格式均由同一 handler 处理：`_RE_ANDROID_RECV.search(line) or _RE_ANDROID_RECV2.search(line)`。  
