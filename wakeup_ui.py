@@ -288,7 +288,7 @@ def _build_dev_info(sessions: list[dict]) -> dict[str, tuple[str, str]]:
                 ev       = entry["event"]
                 dtype    = ev.get("deviceTypeName") or "—"
                 udid_raw = ev.get("DeviceUdid")
-                udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+                udid     = ",".join(str(b) for b in udid_raw) if udid_raw else "未知"
                 info[dev_name] = (dtype, udid)
     return info
 
@@ -318,7 +318,7 @@ def _render_aligned_device_row(
     ev          = entry["event"]
     dtype_name  = ev.get("deviceTypeName") or "—"
     device_udid = ev.get("DeviceUdid")
-    udid_str    = "".join(f"{b:02X}" for b in device_udid) if device_udid else "未知"
+    udid_str    = ",".join(str(b) for b in device_udid) if device_udid else "未知"
     dec         = ev.get("Decision") or "—"
     dec_label   = "响应" if dec == "true" else "不响应" if dec == "false" else dec
     dec_badge   = (
@@ -425,8 +425,8 @@ def _render_aligned_device_row(
 
                 for rb in all_recv:
                     dec          = rb.get("Decoded") or {}
-                    rb_udid      = "".join(
-                        f"{b:02X}" for b in (dec.get("udid") or [])
+                    rb_udid      = ",".join(
+                        str(b) for b in (dec.get("udid") or [])
                     ) or "未知"
                     rb_tname     = dec.get("typeName", "广播")
                     rb_dtype_dec = dec.get("deviceTypeName", "—")
@@ -534,7 +534,7 @@ def _render_session_list(
                         # Read directly from this event (not the cached dev_info)
                         dtype    = ev.get("deviceTypeName") or "—"
                         udid_raw = ev.get("DeviceUdid")
-                        udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+                        udid     = ",".join(str(b) for b in udid_raw) if udid_raw else "未知"
                         badge    = (
                             "bg-green-100 text-green-700" if d == "true"
                             else "bg-gray-100 text-gray-500"
@@ -829,7 +829,7 @@ def index():
                         if device_udid is None:
                             udid_bytes = ev.get("DeviceUdid")
                             if udid_bytes:
-                                device_udid = "".join(f"{b:02X}" for b in udid_bytes)
+                                device_udid = ",".join(str(b) for b in udid_bytes)
                         if device_type_name is None:
                             device_type_name = ev.get("deviceTypeName")
                         if device_udid and device_type_name:

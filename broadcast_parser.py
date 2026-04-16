@@ -513,12 +513,17 @@ class _UnionFind:
             self.rank[ra] += 1
 
 
-def _udid_hex(udid_bytes) -> str:
-    """Convert 4-byte UDID list to uppercase hex string, or '未知' if absent."""
+def _udid_csv(udid_bytes) -> str:
+    """Convert UDID byte list → comma-separated byte values (e.g. '205,181,212,173').
+
+    Using the raw decoded byte form (matching broadcast payload bytes 6–9)
+    makes it trivial to cross-reference UDIDs against the raw broadcast
+    strings shown in the UI. Returns '未知' if bytes are missing/invalid.
+    """
     if not udid_bytes:
         return "未知"
     try:
-        return "".join(f"{b:02X}" for b in udid_bytes)
+        return ",".join(str(int(b)) for b in udid_bytes)
     except (TypeError, ValueError):
         return "未知"
 
@@ -792,7 +797,7 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
                     dec = (rb_ref.get("Decoded") or {}) if rb_ref else {}
                     recv_from.append({
                         "device": dev_j,
-                        "udid":   _udid_hex(dec.get("udid")),
+                        "udid":   _udid_csv(dec.get("udid")),
                     })
                 else:
                     # Time-estimate link: classify by IQR distance
@@ -806,7 +811,7 @@ def align_sessions(all_results: dict[str, list[dict]]) -> list[dict]:
                         link_confs.append("yellow")
                     no_recv.append({
                         "device":         dev_j,
-                        "udid":           _udid_hex(ev_j.get("DeviceUdid")),
+                        "udid":           _udid_csv(ev_j.get("DeviceUdid")),
                         "missing_bcasts": [lbl for lbl, _ in sent_bcasts_j],
                     })
 

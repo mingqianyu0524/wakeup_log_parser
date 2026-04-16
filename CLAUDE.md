@@ -49,7 +49,7 @@ NiceGUI UI，端口 8080，单页应用。
 | `_render_event_card(idx, o1)` | 渲染解析视图中一条唤醒事件展开卡（T1/T1a/T2/T2a/T3 + 广播） |
 | `_kv(label, value)` | 渲染 key-value 行，值为 None 时显示 "—" |
 | `_classify_session(entries)` | 判断唤醒响应模式：normal / double(双响) / wrong(错响) |
-| `_build_dev_info(sessions)` | 从 sessions 数据构建 `{dev_name: (dtype_name, udid_hex)}` 映射 |
+| `_build_dev_info(sessions)` | 从 sessions 数据构建 `{dev_name: (dtype_name, udid_csv)}` 映射（udid 为 "205,181,212,173" 形式） |
 | `_render_aligned_device_row(dev_name, entry, dev_info)` | 渲染对齐视图中单台设备的展开行 |
 | `_render_session_list(sessions, all_device_names, dev_info, ...)` | 渲染过滤后的 session 列表（纯渲染，无状态），由 `_render_aligned_sessions` 的 `_refresh()` 调用 |
 | `_render_aligned_sessions(sessions, all_device_names)` | 渲染完整对齐视图：过滤栏 + 响应式 `sess_col` 容器 |
@@ -57,7 +57,7 @@ NiceGUI UI，端口 8080，单页应用。
 **`index()` 内部结构：**
 1. 设备路径输入行（`add_device_row`）
 2. "开始解析"按钮 → `on_parse()` — 后台线程 `parse_device_logs`，结果存入 `_state["all_results"]`；带进度条 UI
-3. 解析结果区：每台设备一个 `ui.expansion`（标题 `📱 [{deviceTypeName}]  UDID:{hex}  (N次唤醒)`，**不含目录名**），展开后每条唤醒事件调用 `_render_event_card`
+3. 解析结果区：每台设备一个 `ui.expansion`（标题 `📱 [{deviceTypeName}]  UDID:{csv}  (N次唤醒)`，**不含目录名**；csv 为 `205,181,212,173` 形式，即广播 raw 第 6-9 字节），展开后每条唤醒事件调用 `_render_event_card`
 4. "对齐分析"按钮 → `on_align()` — 调用 `align_sessions`，结果传入 `_render_aligned_sessions`
 
 **解析进度条实现（`on_parse()` 内）：**
@@ -113,7 +113,7 @@ progress_timer.cancel()
   ```python
   dtype    = ev.get("deviceTypeName") or "—"
   udid_raw = ev.get("DeviceUdid")
-  udid     = "".join(f"{b:02X}" for b in udid_raw) if udid_raw else "未知"
+  udid     = ",".join(str(b) for b in udid_raw) if udid_raw else "未知"  # csv 字节形式
   ```
   缺席设备仍使用 `dev_info` 缓存。
 
@@ -190,6 +190,7 @@ progress_timer.cancel()
             "confidence":        str,   # "green"/"yellow"/"red"/"isolated"
             "received_from":     list,  # [{"device": str, "udid": str}]
             "not_received_from": list,  # [{"device": str, "udid": str, "missing_bcasts": list[str]}]
+            # udid 采用 CSV 字节形式：'205,181,212,173'（= 广播 raw 第 6-9 字节），由 _udid_csv() 生成
             # missing_bcasts: ["T1a"] / ["T2a"] / ["T1a","T2a"] — 对方发了但本机未收到的广播
         }
     }
@@ -268,7 +269,7 @@ T2b 时间窗：[anchor_ms, T4_ms]  — 收到广播（去重）
 
 每台设备一个 `ui.expansion`，标题格式（**不含目录名**）：
 ```
-📱  [{deviceTypeName}]  UDID:{hex}  (N次唤醒)
+📱  [{deviceTypeName}]  UDID:{csv}  (N次唤醒)   # csv = "205,181,212,173"
 ```
 
 展开后每条唤醒事件调用 `_render_event_card`，左右两列：
@@ -293,7 +294,7 @@ session 展开后：
 
 设备行 header（**自定义 header slot**）：
 ```
-{置信度图标} {deviceTypeName}  UDID:{hex}    [响应/不响应]
+{置信度图标} {deviceTypeName}  UDID:{csv}    [响应/不响应]   # csv = "205,181,212,173"
 ```
 
 设备行展开内容（三段）：
