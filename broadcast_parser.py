@@ -60,6 +60,11 @@ _RE_T2 = re.compile(r"===start::")
 _RE_T3 = re.compile(r"onResult::\s*isShouldResponse")
 _RE_DECISION = re.compile(r"isShouldResponse\s*=\s*(true|false)", re.IGNORECASE)
 
+# ── upstream wakeup-chain events ─────────────────────────────────────────────
+_RE_HOTWORD  = re.compile(r"hotword detected event")
+_RE_VPR      = re.compile(r"vpr verify success")
+_RE_MAINPROC = re.compile(r"mainProcess init.*isSuccess")
+
 # ── broadcast regex patterns ──────────────────────────────────────────────────
 
 # Android sends: "getEncryptData::...dec data = [-24, 81, ...]"
@@ -214,9 +219,50 @@ def _scan_file(
 
     pending: dict | None = initial_pending
 
+    # Upstream wakeup-chain: track the latest occurrence so it can be
+    # attached to the next pending event.  Each value is (ts, ts_ms).
+    _last_hotword:  tuple[str, int] | None = None
+    _last_vpr:      tuple[str, int] | None = None
+    _last_mainproc: tuple[str, int] | None = None
+
+    def _upstream_fields() -> dict:
+        return {
+            "hotword":        _last_hotword[0]  if _last_hotword  else None,
+            "hotword_ms":     _last_hotword[1]  if _last_hotword  else None,
+            "vpr":            _last_vpr[0]      if _last_vpr      else None,
+            "vpr_ms":         _last_vpr[1]      if _last_vpr      else None,
+            "mainprocess":    _last_mainproc[0] if _last_mainproc else None,
+            "mainprocess_ms": _last_mainproc[1] if _last_mainproc else None,
+        }
+
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
+
+                # ── upstream wakeup-chain events (record only) ────────────
+                if _RE_HOTWORD.search(line):
+                    ts = extract_timestamp(line)
+                    if ts:
+                        _last_hotword = (ts, ts_to_ms(ts))
+
+                if _RE_VPR.search(line):
+                    ts = extract_timestamp(line)
+                    if ts:
+                        if pending is not None and pending.get("vpr") is None:
+                            pending["vpr"]    = ts
+                            pending["vpr_ms"] = ts_to_ms(ts)
+                        else:
+                            _last_vpr = (ts, ts_to_ms(ts))
+
+                if _RE_MAINPROC.search(line):
+                    ts = extract_timestamp(line)
+                    if ts:
+                        if pending is not None and pending.get("mainprocess") is None:
+                            pending["mainprocess"]    = ts
+                            pending["mainprocess_ms"] = ts_to_ms(ts)
+                        else:
+                            _last_mainproc = (ts, ts_to_ms(ts))
+
                 # ── wakeup events ──────────────────────────────────────────
                 if _RE_T1.search(line):
                     ts = extract_timestamp(line)
@@ -228,7 +274,9 @@ def _scan_file(
                             "t2": None, "t2_ms": None,
                             "t3": None, "t3_ms": None,
                             "decision": None,
+                            **_upstream_fields(),
                         }
+                        _last_hotword = _last_vpr = _last_mainproc = None
 
                 elif _RE_T2.search(line):
                     ts = extract_timestamp(line)
@@ -245,7 +293,9 @@ def _scan_file(
                             "t2": ts,   "t2_ms": ts_ms,
                             "t3": None, "t3_ms": None,
                             "decision": None,
+                            **_upstream_fields(),
                         }
+                        _last_hotword = _last_vpr = _last_mainproc = None
                     elif pending["t2"] is None:
                         pending["t2"]    = ts
                         pending["t2_ms"] = ts_ms
@@ -258,7 +308,9 @@ def _scan_file(
                             "t2": ts,   "t2_ms": ts_ms,
                             "t3": None, "t3_ms": None,
                             "decision": None,
+                            **_upstream_fields(),
                         }
+                        _last_hotword = _last_vpr = _last_mainproc = None
 
                 elif _RE_T3.search(line):
                     ts = extract_timestamp(line)
@@ -271,7 +323,9 @@ def _scan_file(
                             "t2": None, "t2_ms": None,
                             "t3": ts,   "t3_ms": ts_ms,
                             "decision": None,
+                            **_upstream_fields(),
                         }
+                        _last_hotword = _last_vpr = _last_mainproc = None
                     if pending["t3"] is None:
                         pending["t3"]    = ts
                         pending["t3_ms"] = ts_ms
@@ -425,10 +479,25 @@ def _build_o1(ev: dict, sent: list[dict], recv: list[dict]) -> dict:
                         "Decoded":     r["decoded"],
                     })
 
+    # ── upstream timing-issue detection ──────────────────────────────────────
+    # Normal chain: hotword → T1(===de) → vpr → mainProcess → T2(===start::)
+    # Issue: vpr or mainProcess fires BEFORE T1
+    timing_issue = False
+    if t1_ms is not None:
+        for key in ("vpr_ms", "mainprocess_ms"):
+            up_ms = ev.get(key)
+            if up_ms is not None and up_ms < t1_ms:
+                timing_issue = True
+                break
+
     return {
         "deviceType":        device_type,
         "deviceTypeName":    _DEVICE_TYPE_NAMES.get(device_type, "未知") if device_type else None,
         "DeviceUdid":        device_udid,
+        "HotwordTime":       ev.get("hotword"),
+        "VprTime":           ev.get("vpr"),
+        "MainProcessTime":   ev.get("mainprocess"),
+        "TimingIssue":       timing_issue,
         "L1WakeupTime":      ev.get("t1"),
         "L1BroadcastTime":   t1a_entry["ts"] if t1a_entry else None,
         "L1BroadcastData":   t1a_entry["decoded"] if t1a_entry else None,

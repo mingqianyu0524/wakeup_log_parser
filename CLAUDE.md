@@ -147,6 +147,10 @@ progress_timer.cancel()
     "deviceType":         int | None,   # 40=平板 50=手机 110=手表 240=车机
     "deviceTypeName":     str | None,   # "平板"/"手机"/"手表"/"车机"
     "DeviceUdid":         list[int] | None,  # 4字节 UDID
+    "HotwordTime":        str | None,   # HAL唤醒词检测时间
+    "VprTime":            str | None,   # 海思二级唤醒(vpr verify)时间
+    "MainProcessTime":    str | None,   # AIBase二级唤醒(mainProcess init)时间
+    "TimingIssue":        bool,         # VPR/MainProcess在T1之前 → True
     "L1WakeupTime":       str | None,   # "MM-DD HH:MM:SS.mmm" T1
     "L1BroadcastTime":    str | None,   # T1a
     "L1BroadcastData":    dict | None,  # decode_broadcast() 返回值
@@ -220,6 +224,9 @@ progress_timer.cancel()
 ## 日志匹配正则
 
 ```python
+_RE_HOTWORD   = re.compile(r"hotword detected event")          # HAL唤醒词检测
+_RE_VPR       = re.compile(r"vpr verify success")              # 海思二级唤醒
+_RE_MAINPROC  = re.compile(r"mainProcess init.*isSuccess")     # AIBase二级唤醒
 _RE_T1        = re.compile(r"===de")
 _RE_T2        = re.compile(r"===start::")
 _RE_T3        = re.compile(r"onResult::\s*isShouldResponse")

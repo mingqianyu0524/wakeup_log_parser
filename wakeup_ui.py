@@ -99,21 +99,25 @@ def _render_event_card(idx: int, o1: dict) -> None:
         else "text-gray-500"
     )
 
+    timing_issue = o1.get("TimingIssue", False)
+
     exp = ui.expansion().classes("w-full border rounded mb-1")
     with exp.add_slot("header"):
         with ui.row().classes("items-center gap-3 w-full py-0.5"):
-            # Colored index badge
             ui.label(f"#{idx + 1}").classes(
                 "bg-indigo-500 text-white text-xs font-bold "
                 "px-2 py-0.5 rounded-full min-w-[2rem] text-center"
             )
-            # Single wakeup time (T1 preferred, T2 fallback)
             ui.label(f"{display_time_lbl}=").classes("text-gray-400 text-xs -mr-2")
             ui.label(display_time).classes("font-mono text-sm text-gray-700")
-            # Decision badge
             ui.label(dec_label).classes(
                 f"text-xs font-semibold px-2 py-0.5 rounded {dec_badge_cls} ml-auto"
             )
+            if timing_issue:
+                ui.label("唤醒链路时序问题").classes(
+                    "text-xs font-semibold px-2 py-0.5 rounded "
+                    "bg-yellow-100 text-yellow-800 border border-yellow-400"
+                )
 
     with exp:
         with ui.grid(columns=2).classes("w-full gap-x-6 gap-y-1 text-sm p-2"):
@@ -122,6 +126,9 @@ def _render_event_card(idx: int, o1: dict) -> None:
             with ui.column().classes("gap-1"):
                 ui.label("📡 唤醒时间线").classes("font-bold text-blue-700")
                 _kv("设备类型",       dtype_str)
+                _kv("HAL唤醒词检测",  o1.get("HotwordTime"))
+                _kv("海思二级唤醒 VPR", o1.get("VprTime"))
+                _kv("AIBase二级唤醒", o1.get("MainProcessTime"))
                 _kv("一级唤醒 T1",    o1.get("L1WakeupTime"))
                 _kv("发送预唤醒广播 T1a", o1.get("L1BroadcastTime"))
                 _kv("二级唤醒 T2",    o1.get("L2WakeupTime"))
@@ -330,6 +337,7 @@ def _render_aligned_device_row(
     )
     recv_from = entry.get("received_from", [])
     no_recv   = entry.get("not_received_from", [])
+    timing_issue = ev.get("TimingIssue", False)
 
     # ── expansion with custom header ──────────────────────────────────────────
     exp = ui.expansion().classes(
@@ -343,6 +351,11 @@ def _render_aligned_device_row(
             ui.label(dec_label).classes(
                 f"text-xs font-semibold px-2 py-0.5 rounded {dec_badge}"
             )
+            if timing_issue:
+                ui.label("唤醒链路时序问题").classes(
+                    "text-xs font-semibold px-2 py-0.5 rounded "
+                    "bg-yellow-100 text-yellow-800 border border-yellow-400"
+                )
 
     with exp:
         with ui.column().classes("gap-2 p-2 text-sm"):
@@ -366,12 +379,16 @@ def _render_aligned_device_row(
                     if (ms is not None and anchor_ms is not None
                             and ms != anchor_ms):
                         delta = ms - anchor_ms
-                        ui.label(f"【+{delta}ms】").classes(
+                        sign = "+" if delta >= 0 else ""
+                        ui.label(f"【{sign}{delta}ms】").classes(
                             "text-xs text-gray-400 italic"
                         )
 
             recv_list = ev.get("ReceivedBroadcasts", [])
             with ui.column().classes("gap-0 pl-1"):
+                _row_time("HAL  唤醒词检测",      ev.get("HotwordTime"))
+                _row_time("VPR  海思二级唤醒",     ev.get("VprTime"))
+                _row_time("MAIN AIBase二级唤醒",  ev.get("MainProcessTime"))
                 _row_time("T1   一级唤醒",       ev.get("L1WakeupTime"))
                 _row_time("T1a  预唤醒广播",      ev.get("L1BroadcastTime"))
                 _row_time("T2   二级唤醒",        ev.get("L2WakeupTime"))
